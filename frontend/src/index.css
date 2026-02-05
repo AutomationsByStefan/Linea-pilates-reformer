@@ -131,6 +131,15 @@
     padding-bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
 }
 
+/* Ensure bottom nav is above any overlays */
+#emergent-badge {
+    z-index: 40 !important;
+}
+
+.bottom-nav {
+    z-index: 50 !important;
+}
+
 /* Touch feedback */
 .touch-active:active {
     transform: scale(0.98);
