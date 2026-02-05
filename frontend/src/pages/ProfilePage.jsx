@@ -115,8 +115,12 @@ const ProfilePage = ({ user }) => {
               <p className="text-xs text-muted-foreground">Član od</p>
               <p className="text-foreground">
                 {user?.created_at 
-                  ? new Date(user.created_at).toLocaleDateString('bs-BA', { month: 'long', year: 'numeric' })
-                  : 'Januar 2026'
+                  ? (() => {
+                      const date = new Date(user.created_at);
+                      const months = ['januar', 'februar', 'mart', 'april', 'maj', 'juni', 'juli', 'august', 'septembar', 'oktobar', 'novembar', 'decembar'];
+                      return `${months[date.getMonth()]} ${date.getFullYear()}.`;
+                    })()
+                  : 'januar 2026.'
                 }
               </p>
             </div>
