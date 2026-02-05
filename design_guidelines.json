@@ -1,0 +1,243 @@
+{
+  "brand_identity": {
+    "name": "Linea Reformer Pilates",
+    "archetype": "Jewel & Luxury (Gilded Organic)",
+    "emotional_tone": "Serene, Exclusive, Strong, Fluid",
+    "target_audience": "Women seeking strength and elegance in a premium environment",
+    "language": "Bosnian (bs-BA)"
+  },
+  "design_system": {
+    "colors": {
+      "palette": {
+        "primary": {
+          "DEFAULT": "#B8860B",
+          "foreground": "#FFFFFF",
+          "hover": "#9A7009",
+          "description": "Dark Goldenrod - Used for primary actions, active states, and key brand elements."
+        },
+        "secondary": {
+          "DEFAULT": "#F5E6D3",
+          "foreground": "#3E3E3E",
+          "description": "Pale Gold/Beige - Used for secondary buttons, card backgrounds, and soft highlights."
+        },
+        "background": {
+          "DEFAULT": "#FDFCF8",
+          "alt": "#F9F6F0",
+          "description": "Warm Off-White/Bone - Main app background. Avoid pure white #FFFFFF."
+        },
+        "foreground": {
+          "DEFAULT": "#2A2A2A",
+          "muted": "#666666",
+          "description": "Soft Black/Charcoal - Primary text color. Never use pure black #000000."
+        },
+        "accent": {
+          "DEFAULT": "#D4AF37",
+          "foreground": "#FFFFFF",
+          "description": "Metallic Gold - Used for icons, thin borders, and decorative elements."
+        },
+        "muted": {
+          "DEFAULT": "#F0EAE2",
+          "foreground": "#888888"
+        },
+        "border": "#E5D3B3",
+        "input": "#F0EAE2",
+        "ring": "#D4AF37"
+      },
+      "gradients": {
+        "gold_rush": "linear-gradient(135deg, #D4AF37 0%, #B8860B 100%)",
+        "soft_glow": "linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(212,175,55,0.1) 100%)"
+      }
+    },
+    "typography": {
+      "font_family": {
+        "heading": "Playfair Display, serif",
+        "body": "Manrope, sans-serif"
+      },
+      "scale": {
+        "h1": "text-4xl font-bold tracking-tight",
+        "h2": "text-3xl font-semibold tracking-tight",
+        "h3": "text-2xl font-medium",
+        "body_lg": "text-lg leading-relaxed",
+        "body_base": "text-base leading-relaxed",
+        "caption": "text-sm text-muted-foreground tracking-wide uppercase"
+      }
+    },
+    "spacing": {
+      "container_padding": "p-6 md:p-8",
+      "section_gap": "gap-8",
+      "element_gap": "gap-4"
+    },
+    "radius": {
+      "default": "rounded-2xl",
+      "button": "rounded-full",
+      "card": "rounded-3xl"
+    },
+    "shadows": {
+      "soft": "0 4px 20px -2px rgba(184, 134, 11, 0.1)",
+      "hover": "0 10px 25px -5px rgba(184, 134, 11, 0.2)",
+      "glass": "0 8px 32px 0 rgba(31, 38, 135, 0.07)"
+    }
+  },
+  "assets": {
+    "images": {
+      "hero_welcome": {
+        "url": "https://images.unsplash.com/photo-1614634053434-1729f6ac6bd6?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "alt": "Elegant woman on reformer",
+        "usage": "Home screen welcome card background or Login screen hero"
+      },
+      "packages_bg": {
+        "url": "https://images.unsplash.com/photo-1754257320386-2aa79623257c?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "alt": "Dynamic pilates movement",
+        "usage": "Background for Packages/Membership cards"
+      },
+      "studio_interior": {
+        "url": "https://images.unsplash.com/photo-1601002257790-ebe0966a85ae?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "alt": "Luxury studio vibe",
+        "usage": "Contact/Location card background"
+      },
+      "logos": {
+        "primary": "https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/5nxfiuyl_att._hwTgC7bergolOr8J8t8MnMqBiHNjbb-rVcNJHYvkZw.jpg",
+        "secondary": "https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/96v1ku5r_att.JL_DsU3EHkM95R5yudqp0hqALKv0IYfOO8jof2uULag.jpg"
+      }
+    },
+    "icons": {
+      "library": "lucide-react",
+      "style": "Stroke width 1.5px for elegance",
+      "mapping": {
+        "home": "Home",
+        "schedule": "CalendarDays",
+        "packages": "CreditCard",
+        "profile": "User",
+        "location": "MapPin",
+        "phone": "Phone",
+        "email": "Mail",
+        "check": "CheckCircle2"
+      }
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-primary text-primary-foreground hover:bg-primary/90 h-12 px-8 rounded-full font-medium transition-all duration-300 shadow-soft hover:shadow-hover hover:-translate-y-0.5",
+      "secondary": "bg-secondary text-secondary-foreground hover:bg-secondary/80 h-12 px-8 rounded-full font-medium transition-all duration-300",
+      "outline": "border-2 border-primary text-primary hover:bg-primary/5 h-12 px-8 rounded-full font-medium transition-all duration-300",
+      "ghost": "hover:bg-accent/10 text-foreground hover:text-primary h-10 px-4 rounded-full transition-colors"
+    },
+    "cards": {
+      "base": "bg-white border border-border/50 rounded-3xl shadow-soft p-6 relative overflow-hidden",
+      "glass": "bg-white/80 backdrop-blur-md border border-white/20 rounded-3xl shadow-glass p-6",
+      "interactive": "cursor-pointer transition-all duration-300 hover:border-primary/30 hover:shadow-hover group"
+    },
+    "inputs": {
+      "base": "h-12 rounded-xl border-input bg-white/50 focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all duration-200"
+    },
+    "navigation": {
+      "bottom_bar": "fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-border/40 h-20 pb-2 z-50 flex items-center justify-around shadow-[0_-4px_20px_rgba(0,0,0,0.03)]"
+    }
+  },
+  "layout_strategies": {
+    "mobile_first": {
+      "container": "max-w-[428px] mx-auto min-h-screen bg-background relative shadow-2xl overflow-hidden",
+      "safe_area": "pb-24 pt-6 px-6"
+    },
+    "grids": {
+      "bento_dashboard": "grid grid-cols-2 gap-4 auto-rows-auto",
+      "list_view": "flex flex-col gap-4"
+    }
+  },
+  "pages": {
+    "login": {
+      "layout": "flex flex-col justify-center items-center h-screen p-8 bg-background relative overflow-hidden",
+      "elements": [
+        "Background: Subtle gradient or blurred image",
+        "Logo: Centered, large (w-32)",
+        "Title: 'Dobrodošli' (Welcome) - Playfair Display",
+        "Form: Phone input with country code",
+        "Social: Google Login button (Gold outline)",
+        "Footer: 'Nemate nalog? Registruj se'"
+      ]
+    },
+    "home": {
+      "title": "Početna",
+      "layout": "bento_dashboard",
+      "sections": [
+        {
+          "id": "welcome_card",
+          "type": "hero",
+          "style": "col-span-2 bg-primary text-white p-6 rounded-3xl relative overflow-hidden",
+          "content": "Greeting + Next Class info"
+        },
+        {
+          "id": "active_membership",
+          "type": "stat",
+          "style": "col-span-1 bg-secondary p-4 rounded-2xl",
+          "content": "Credits remaining / Expiry"
+        },
+        {
+          "id": "quick_book",
+          "type": "action",
+          "style": "col-span-1 bg-white border border-primary/20 p-4 rounded-2xl flex flex-col justify-center items-center",
+          "content": "Icon + 'Rezerviši'"
+        },
+        {
+          "id": "upcoming_schedule",
+          "type": "list",
+          "style": "col-span-2 mt-4",
+          "content": "Horizontal scroll of upcoming classes"
+        }
+      ]
+    },
+    "schedule": {
+      "title": "Termini",
+      "layout": "flex flex-col gap-4",
+      "components": [
+        "Calendar Strip (Horizontal week view)",
+        "Filter Tabs (Reformer, Mat, Private)",
+        "Class Cards (Time, Instructor, Spots left)"
+      ]
+    },
+    "packages": {
+      "title": "Paketi",
+      "layout": "flex flex-col gap-6",
+      "components": [
+        "Membership Cards (Vertical stack)",
+        "Features List (Checkmarks)",
+        "Price (Large Playfair font)"
+      ]
+    },
+    "profile": {
+      "title": "Profil",
+      "layout": "flex flex-col gap-6",
+      "components": [
+        "Avatar (Large, centered)",
+        "Stats Row (Classes attended, Streak)",
+        "Settings List (Edit profile, Notifications, Language)",
+        "Logout Button (Destructive/Muted)"
+      ]
+    }
+  },
+  "universal_guidelines": {
+    "anti_ai_rules": [
+      "Avoid generic 'SaaS Blue' - stick to the Gold/Bone palette.",
+      "Do not use standard shadows - use colored shadows (gold-tinted).",
+      "Typography must mix Serif (Headings) and Sans (Body) for that 'Editorial' look.",
+      "Use texture (noise/grain) on backgrounds if possible to avoid 'digital flatness'."
+    ],
+    "motion": {
+      "library": "framer-motion (recommended) or tailwindcss-animate",
+      "principles": [
+        "Staggered entrance for list items",
+        "Soft scale-down on button press",
+        "Smooth page transitions (fade + slide up)"
+      ]
+    },
+    "accessibility": {
+      "contrast": "Ensure Gold text is only used on Dark backgrounds, or Dark Grey text on Gold backgrounds.",
+      "touch_targets": "All interactive elements must be min 44px height."
+    },
+    "testing": {
+      "attribute": "data-testid",
+      "format": "kebab-case (e.g., 'login-submit-btn', 'nav-home-tab')"
+    }
+  },
+  "instructions_to_main_agent": "You are building a luxury mobile web app. Prioritize the 'feel' of the application. It should feel like entering a high-end spa. Use the provided image URLs for backgrounds and cards. Implement the bottom navigation as a fixed element. Ensure all text is in Bosnian as specified in the page breakdowns. Use the 'lucide-react' library for icons. Create a 'Layout' component that handles the mobile container constraint (max-w-[428px]) to simulate a native app experience on desktop browsers."
+}
