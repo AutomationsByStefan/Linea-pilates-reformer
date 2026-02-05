@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+
+import requests
+import sys
+import json
+from datetime import datetime
+
+class PilatesAPITester:
+    def __init__(self, base_url="https://pilates-hub-12.preview.emergentagent.com"):
+        self.base_url = base_url
+        self.api_url = f"{base_url}/api"
+        self.session_token = None
+        self.tests_run = 0
+        self.tests_passed = 0
+        self.test_results = []
+
+    def log_test(self, name, success, details=""):
+        """Log test result"""
+        self.tests_run += 1
+        if success:
+            self.tests_passed += 1
+            print(f"✅ {name}")
+        else:
+            print(f"❌ {name} - {details}")
+        
+        self.test_results.append({
+            "test": name,
+            "success": success,
+            "details": details
+        })
+
+    def run_test(self, name, method, endpoint, expected_status, data=None, headers=None):
+        """Run a single API test"""
+        url = f"{self.api_url}/{endpoint}"
+        test_headers = {'Content-Type': 'application/json'}
+        
+        if self.session_token:
+            test_headers['Authorization'] = f'Bearer {self.session_token}'
+        
+        if headers:
+            test_headers.update(headers)
+
+        try:
+            if method == 'GET':
+                response = requests.get(url, headers=test_headers, timeout=10)
+            elif method == 'POST':
+                response = requests.post(url, json=data, headers=test_headers, timeout=10)
+            elif method == 'PUT':
+                response = requests.put(url, json=data, headers=test_headers, timeout=10)
+            elif method == 'DELETE':
+                response = requests.delete(url, headers=test_headers, timeout=10)
+
+            success = response.status_code == expected_status
+            details = f"Status: {response.status_code}"
+            
+            if not success:
+                details += f", Expected: {expected_status}"
+                try:
+                    error_data = response.json()
+                    details += f", Response: {error_data}"
+                except:
+                    details += f", Response: {response.text[:200]}"
+
+            self.log_test(name, success, details)
+            
+            if success:
+                try:
+                    return response.json()
+                except:
+                    return {}
+            return None
+
+        except Exception as e:
+            self.log_test(name, False, f"Error: {str(e)}")
+            return None
+
+    def test_public_endpoints(self):
+        """Test public endpoints that don't require authentication"""
+        print("\n🔍 Testing Public Endpoints...")
+        
+        # Test packages endpoint
+        packages = self.run_test("Get Packages", "GET", "packages", 200)
+        if packages and isinstance(packages, list) and len(packages) > 0:
+            print(f"   Found {len(packages)} packages")
+        
+        # Test schedule endpoint
+        schedule = self.run_test("Get Schedule", "GET", "schedule", 200)
+        if schedule and isinstance(schedule, list) and len(schedule) > 0:
+            print(f"   Found {len(schedule)} schedule slots")
+        
+        # Test studio info endpoint
+        studio_info = self.run_test("Get Studio Info", "GET", "studio-info", 200)
+        if studio_info and isinstance(studio_info, dict):
+            print(f"   Studio: {studio_info.get('naziv', 'Unknown')}")
+
+    def test_phone_auth_flow(self):
+        """Test phone authentication flow"""
+        print("\n🔍 Testing Phone Auth Flow...")
+        
+        test_phone = "+387 61 123 456"
+        
+        # Test send OTP
+        otp_response = self.run_test(
+            "Send OTP", 
+            "POST", 
+            "auth/phone/send-otp", 
+            200,
+            {"phone": test_phone}
+        )
+        
+        if otp_response:
+            print(f"   OTP sent, user_exists: {otp_response.get('user_exists', False)}")
+            
+            # Test verify OTP with mock code
+            verify_response = self.run_test(
+                "Verify OTP (Mock)", 
+                "POST", 
+                "auth/phone/verify", 
+                200,
+                {"phone": test_phone, "otp": "123456"}
+            )
+            
+            if verify_response and verify_response.get('user_id'):
+                print(f"   Phone auth successful for user: {verify_response.get('name', 'Unknown')}")
+                return True
+        
+        return False
+
+    def test_registration_flow(self):
+        """Test user registration"""
+        print("\n🔍 Testing Registration Flow...")
+        
+        test_phone = f"+387 61 {datetime.now().strftime('%H%M%S')}"
+        test_email = f"test.user.{datetime.now().strftime('%H%M%S')}@example.com"
+        
+        # Test registration
+        register_response = self.run_test(
+            "Register User", 
+            "POST", 
+            "auth/register", 
+            200,
+            {
+                "phone": test_phone,
+                "ime": "Test",
+                "prezime": "User",
+                "email": test_email
+            }
+        )
+        
+        if register_response and register_response.get('user_id'):
+            print(f"   Registration successful for: {register_response.get('name', 'Unknown')}")
+            return True
+        
+        return False
+
+    def test_authenticated_endpoints(self):
+        """Test endpoints that require authentication"""
+        print("\n🔍 Testing Authenticated Endpoints...")
+        
+        # First try to get session token from auth testing setup
+        if not self.session_token:
+            print("   No session token available, skipping authenticated tests")
+            return False
+        
+        # Test /auth/me
+        me_response = self.run_test("Get Current User", "GET", "auth/me", 200)
+        if me_response:
+            print(f"   Authenticated as: {me_response.get('name', 'Unknown')}")
+        
+        # Test memberships
+        memberships = self.run_test("Get Memberships", "GET", "memberships", 200)
+        if memberships and isinstance(memberships, list):
+            print(f"   Found {len(memberships)} memberships")
+        
+        # Test active memberships
+        active_memberships = self.run_test("Get Active Memberships", "GET", "memberships/active", 200)
+        if active_memberships and isinstance(active_memberships, list):
+            print(f"   Found {len(active_memberships)} active memberships")
+        
+        # Test trainings
+        trainings = self.run_test("Get Trainings", "GET", "trainings", 200)
+        if trainings and isinstance(trainings, list):
+            print(f"   Found {len(trainings)} trainings")
+        
+        # Test upcoming trainings
+        upcoming = self.run_test("Get Upcoming Trainings", "GET", "trainings/upcoming", 200)
+        if upcoming and isinstance(upcoming, list):
+            print(f"   Found {len(upcoming)} upcoming trainings")
+        
+        # Test logout
+        self.run_test("Logout", "POST", "auth/logout", 200)
+        
+        return True
+
+    def create_test_session(self):
+        """Create test session using mongosh as described in auth_testing.md"""
+        print("\n🔍 Creating Test Session...")
+        
+        import subprocess
+        import time
+        
+        timestamp = int(time.time())
+        
+        mongosh_script = f'''
+use('test_database');
+var userId = 'test-user-{timestamp}';
+var sessionToken = 'test_session_{timestamp}';
+db.users.insertOne({{
+  user_id: userId,
+  email: 'test.user.{timestamp}@example.com',
+  name: 'Test User',
+  phone: '+387 61 123 456',
+  created_at: new Date()
+}});
+db.user_sessions.insertOne({{
+  user_id: userId,
+  session_token: sessionToken,
+  expires_at: new Date(Date.now() + 7*24*60*60*1000),
+  created_at: new Date()
+}});
+db.memberships.insertOne({{
+  id: 'mem_{timestamp}',
+  user_id: userId,
+  naziv: 'Mjesečna članarina',
+  tip: 'aktivna',
+  preostali_termini: 8,
+  ukupni_termini: 12,
+  datum_isteka: new Date(Date.now() + 25*24*60*60*1000),
+  created_at: new Date()
+}});
+db.trainings.insertOne({{
+  id: 'train_{timestamp}',
+  user_id: userId,
+  datum: new Date(Date.now() + 2*24*60*60*1000),
+  vrijeme: '10:00',
+  instruktor: 'Ana Marić',
+  tip: 'predstojeći',
+  trajanje: 50,
+  created_at: new Date()
+}});
+print('SESSION_TOKEN:' + sessionToken);
+print('USER_ID:' + userId);
+'''
+        
+        try:
+            result = subprocess.run(
+                ['mongosh', '--eval', mongosh_script],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                # Extract session token from output
+                for line in result.stdout.split('\n'):
+                    if 'SESSION_TOKEN:' in line:
+                        self.session_token = line.split('SESSION_TOKEN:')[1].strip()
+                        print(f"   Created session token: {self.session_token[:20]}...")
+                        return True
+            else:
+                print(f"   MongoDB setup failed: {result.stderr}")
+        except Exception as e:
+            print(f"   Error creating test session: {e}")
+        
+        return False
+
+    def run_all_tests(self):
+        """Run all API tests"""
+        print("🚀 Starting Pilates API Tests...")
+        print(f"   Base URL: {self.base_url}")
+        
+        # Test public endpoints first
+        self.test_public_endpoints()
+        
+        # Test phone auth flow
+        self.test_phone_auth_flow()
+        
+        # Test registration
+        self.test_registration_flow()
+        
+        # Create test session for authenticated tests
+        if self.create_test_session():
+            self.test_authenticated_endpoints()
+        
+        # Print summary
+        print(f"\n📊 Test Results: {self.tests_passed}/{self.tests_run} passed")
+        
+        if self.tests_passed == self.tests_run:
+            print("🎉 All tests passed!")
+            return 0
+        else:
+            print("⚠️  Some tests failed")
+            return 1
+
+def main():
+    tester = PilatesAPITester()
+    return tester.run_all_tests()
+
+if __name__ == "__main__":
+    sys.exit(main())
