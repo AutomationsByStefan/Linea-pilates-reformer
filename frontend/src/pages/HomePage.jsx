@@ -51,8 +51,9 @@ const HomePage = ({ user }) => {
   const formatDate = (dateStr) => {
     if (!dateStr) return '';
     const date = new Date(dateStr);
-    const options = { weekday: 'long', day: 'numeric', month: 'long' };
-    return date.toLocaleDateString('bs-BA', options);
+    const days = ['Nedjelja', 'Ponedjeljak', 'Utorak', 'Srijeda', 'Četvrtak', 'Petak', 'Subota'];
+    const months = ['januar', 'februar', 'mart', 'april', 'maj', 'juni', 'juli', 'august', 'septembar', 'oktobar', 'novembar', 'decembar'];
+    return `${days[date.getDay()]}, ${date.getDate()}. ${months[date.getMonth()]}`;
   };
 
   return (

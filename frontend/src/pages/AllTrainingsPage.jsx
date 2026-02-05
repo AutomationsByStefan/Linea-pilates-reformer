@@ -42,12 +42,9 @@ const AllTrainingsPage = () => {
   const formatDate = (dateStr) => {
     if (!dateStr) return '';
     const date = new Date(dateStr);
-    return date.toLocaleDateString('bs-BA', { 
-      weekday: 'long', 
-      day: 'numeric', 
-      month: 'long',
-      year: 'numeric'
-    });
+    const days = ['Nedjelja', 'Ponedjeljak', 'Utorak', 'Srijeda', 'Četvrtak', 'Petak', 'Subota'];
+    const months = ['januar', 'februar', 'mart', 'april', 'maj', 'juni', 'juli', 'august', 'septembar', 'oktobar', 'novembar', 'decembar'];
+    return `${days[date.getDay()]}, ${date.getDate()}. ${months[date.getMonth()]} ${date.getFullYear()}.`;
   };
 
   const TrainingCard = ({ training, isPast = false }) => (

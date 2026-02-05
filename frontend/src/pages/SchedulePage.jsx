@@ -114,11 +114,11 @@ const SchedulePage = () => {
       <div className="flex items-center gap-2 mb-4 animate-slide-up delay-200">
         <Calendar className="w-5 h-5 text-primary" />
         <span className="font-medium text-foreground">
-          {selectedDate.toLocaleDateString('bs-BA', { 
-            weekday: 'long', 
-            day: 'numeric', 
-            month: 'long' 
-          })}
+          {(() => {
+            const days = ['Nedjelja', 'Ponedjeljak', 'Utorak', 'Srijeda', 'Četvrtak', 'Petak', 'Subota'];
+            const months = ['januar', 'februar', 'mart', 'april', 'maj', 'juni', 'juli', 'august', 'septembar', 'oktobar', 'novembar', 'decembar'];
+            return `${days[selectedDate.getDay()]}, ${selectedDate.getDate()}. ${months[selectedDate.getMonth()]}`;
+          })()}
         </span>
       </div>
 
