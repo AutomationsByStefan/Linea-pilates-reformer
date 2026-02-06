@@ -187,6 +187,57 @@ class PilatesAPITester:
         if upcoming and isinstance(upcoming, list):
             print(f"   Found {len(upcoming)} upcoming trainings")
         
+        # NEW ENDPOINTS TESTING
+        
+        # Test user stats endpoint
+        stats = self.run_test("Get User Stats", "GET", "user/stats", 200)
+        if stats and isinstance(stats, dict):
+            print(f"   Stats: {stats.get('preostali_termini', 0)}/{stats.get('ukupni_termini', 0)} remaining")
+        
+        # Test activity status endpoint
+        activity = self.run_test("Get Activity Status", "GET", "user/activity-status", 200)
+        if activity and isinstance(activity, dict):
+            print(f"   Activity: {activity.get('days_inactive', 0)} days inactive")
+        
+        # Test weight endpoints
+        weight_entries = self.run_test("Get Weight Entries", "GET", "weight", 200)
+        if weight_entries and isinstance(weight_entries, list):
+            print(f"   Found {len(weight_entries)} weight entries")
+        
+        # Test add weight entry
+        weight_add = self.run_test(
+            "Add Weight Entry", 
+            "POST", 
+            "weight", 
+            200,
+            {"weight": 70.5, "date": "2024-01-15"}
+        )
+        if weight_add:
+            print("   Weight entry added successfully")
+        
+        # Test notifications endpoints
+        notifications = self.run_test("Get Notifications", "GET", "notifications", 200)
+        if notifications and isinstance(notifications, list):
+            print(f"   Found {len(notifications)} notifications")
+        
+        unread_notifications = self.run_test("Get Unread Notifications", "GET", "notifications/unread", 200)
+        if unread_notifications and isinstance(unread_notifications, list):
+            print(f"   Found {len(unread_notifications)} unread notifications")
+        
+        # Test feedback endpoints
+        pending_feedback = self.run_test("Get Pending Feedback", "GET", "feedback/pending", 200)
+        if pending_feedback and isinstance(pending_feedback, list):
+            print(f"   Found {len(pending_feedback)} trainings needing feedback")
+        
+        feedback_history = self.run_test("Get Feedback History", "GET", "feedback/history", 200)
+        if feedback_history and isinstance(feedback_history, list):
+            print(f"   Found {len(feedback_history)} feedback entries")
+        
+        # Test user search (for sharing)
+        user_search = self.run_test("Search Users", "GET", "users/search?q=test", 200)
+        if user_search and isinstance(user_search, list):
+            print(f"   Found {len(user_search)} users in search")
+        
         # Test logout
         self.run_test("Logout", "POST", "auth/logout", 200)
         
