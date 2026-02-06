@@ -82,7 +82,12 @@ const WeightTrackingPage = () => {
   const formatDate = (dateStr) => {
     const date = new Date(dateStr);
     const days = ['Ned', 'Pon', 'Uto', 'Sri', 'Čet', 'Pet', 'Sub'];
-    return `${days[date.getDay()]}, ${date.getDate()}.${date.getMonth() + 1}.${date.getFullYear()}.`;
+    return `${days[date.getDay()]}, ${date.getDate()}.${date.getMonth() + 1}.`;
+  };
+
+  const formatShortDate = (dateStr) => {
+    const date = new Date(dateStr);
+    return `${date.getDate()}.${date.getMonth() + 1}`;
   };
 
   // Calculate trend
@@ -95,11 +100,12 @@ const WeightTrackingPage = () => {
     return { type: diff > 0 ? 'up' : 'down', diff: Math.abs(diff).toFixed(1) };
   };
 
-  // Simple chart data
-  const chartData = entries.slice(0, 14).reverse();
+  // Chart data (last 10 entries, reversed for chronological order)
+  const chartData = entries.slice(0, 10).reverse();
   const maxWeight = chartData.length > 0 ? Math.max(...chartData.map(e => e.weight)) : 100;
   const minWeight = chartData.length > 0 ? Math.min(...chartData.map(e => e.weight)) : 0;
-  const range = maxWeight - minWeight || 1;
+  const range = (maxWeight - minWeight) || 5; // Default range if all same value
+  const padding = range * 0.1; // Add 10% padding
 
   return (
     <div className="min-h-screen bg-background" data-testid="weight-tracking-page">
@@ -158,37 +164,127 @@ const WeightTrackingPage = () => {
           </div>
         </div>
 
-        {/* Simple Chart */}
+        {/* Line Chart */}
         {chartData.length > 1 && (
           <div className="card-linea mb-6 animate-slide-up delay-200">
             <h2 className="font-heading text-lg text-foreground mb-4">
               Napredak
             </h2>
-            <div className="h-40 flex items-end gap-1">
-              {chartData.map((entry, index) => {
-                const height = ((entry.weight - minWeight) / range) * 100;
-                return (
-                  <div
-                    key={entry.id || index}
-                    className="flex-1 flex flex-col items-center justify-end"
-                  >
-                    <div 
-                      className="w-full gradient-gold rounded-t-lg min-h-[4px] transition-all duration-500"
-                      style={{ height: `${Math.max(height, 4)}%` }}
-                    />
-                    {index % 3 === 0 && (
-                      <span className="text-[10px] text-muted-foreground mt-1">
-                        {entry.date?.slice(5, 10)}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
+            
+            {/* SVG Line Chart */}
+            <div className="relative h-48">
+              <svg className="w-full h-full" viewBox="0 0 400 180" preserveAspectRatio="none">
+                {/* Grid lines */}
+                {[0, 25, 50, 75, 100].map((y) => (
+                  <line
+                    key={y}
+                    x1="40"
+                    y1={20 + y * 1.4}
+                    x2="390"
+                    y2={20 + y * 1.4}
+                    stroke="#E5D3B3"
+                    strokeWidth="1"
+                    strokeDasharray="4,4"
+                    opacity="0.5"
+                  />
+                ))}
+                
+                {/* Line path */}
+                <polyline
+                  fill="none"
+                  stroke="#B8860B"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  points={chartData.map((entry, index) => {
+                    const x = 50 + (index * (340 / Math.max(chartData.length - 1, 1)));
+                    const normalizedY = ((entry.weight - (minWeight - padding)) / (range + 2 * padding));
+                    const y = 160 - (normalizedY * 140);
+                    return `${x},${y}`;
+                  }).join(' ')}
+                />
+                
+                {/* Data points */}
+                {chartData.map((entry, index) => {
+                  const x = 50 + (index * (340 / Math.max(chartData.length - 1, 1)));
+                  const normalizedY = ((entry.weight - (minWeight - padding)) / (range + 2 * padding));
+                  const y = 160 - (normalizedY * 140);
+                  
+                  return (
+                    <g key={entry.id || index}>
+                      <circle
+                        cx={x}
+                        cy={y}
+                        r="6"
+                        fill="#B8860B"
+                        stroke="white"
+                        strokeWidth="2"
+                      />
+                      {/* Weight label on hover area */}
+                      <text
+                        x={x}
+                        y={y - 12}
+                        textAnchor="middle"
+                        fill="#666"
+                        fontSize="10"
+                        fontWeight="500"
+                      >
+                        {entry.weight.toFixed(1)}
+                      </text>
+                    </g>
+                  );
+                })}
+              </svg>
+              
+              {/* X-axis labels */}
+              <div className="absolute bottom-0 left-0 right-0 flex justify-between px-8">
+                {chartData.filter((_, i) => i === 0 || i === chartData.length - 1 || chartData.length <= 5).map((entry, index) => (
+                  <span key={entry.id || index} className="text-[10px] text-muted-foreground">
+                    {formatShortDate(entry.date)}
+                  </span>
+                ))}
+              </div>
             </div>
+
+            {/* Min/Max labels */}
             <div className="flex justify-between mt-2 text-xs text-muted-foreground">
-              <span>{minWeight.toFixed(1)} kg</span>
-              <span>{maxWeight.toFixed(1)} kg</span>
+              <span>Min: {minWeight.toFixed(1)} kg</span>
+              <span>Max: {maxWeight.toFixed(1)} kg</span>
             </div>
+
+            {/* Trend summary */}
+            {chartData.length >= 2 && (
+              <div className="mt-4 p-3 bg-secondary/50 rounded-xl text-center">
+                {(() => {
+                  const firstWeight = chartData[0].weight;
+                  const lastWeight = chartData[chartData.length - 1].weight;
+                  const diff = lastWeight - firstWeight;
+                  const isGain = diff > 0;
+                  const isLoss = diff < 0;
+                  
+                  return (
+                    <p className="text-sm">
+                      {isLoss ? (
+                        <span className="text-green-600 flex items-center justify-center gap-1">
+                          <TrendingDown className="w-4 h-4" />
+                          Smanjenje od {Math.abs(diff).toFixed(1)} kg
+                        </span>
+                      ) : isGain ? (
+                        <span className="text-orange-500 flex items-center justify-center gap-1">
+                          <TrendingUp className="w-4 h-4" />
+                          Povećanje od {Math.abs(diff).toFixed(1)} kg
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground flex items-center justify-center gap-1">
+                          <Minus className="w-4 h-4" />
+                          Bez promjene
+                        </span>
+                      )}
+                    </p>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         )}
 
@@ -250,6 +346,9 @@ const WeightTrackingPage = () => {
           ) : (
             <div className="card-linea text-center py-8">
               <p className="text-muted-foreground">Nema unosa</p>
+              <p className="text-sm text-muted-foreground mt-2">
+                Dodajte prvi unos iznad
+              </p>
             </div>
           )}
         </div>
