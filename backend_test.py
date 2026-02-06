@@ -82,16 +82,33 @@ class PilatesAPITester:
         packages = self.run_test("Get Packages", "GET", "packages", 200)
         if packages and isinstance(packages, list) and len(packages) > 0:
             print(f"   Found {len(packages)} packages")
+            # Check if package text shows '3 osobe' instead of '6'
+            for pkg in packages:
+                if 'Mala grupa do 3 osobe' in str(pkg):
+                    print("   ✅ Package text correctly shows '3 osobe'")
+                    break
+            else:
+                print("   ⚠️  Package text may not show '3 osobe'")
         
         # Test schedule endpoint
         schedule = self.run_test("Get Schedule", "GET", "schedule", 200)
         if schedule and isinstance(schedule, list) and len(schedule) > 0:
             print(f"   Found {len(schedule)} schedule slots")
+            # Check if schedule shows ukupno_mjesta: 3
+            first_slot = schedule[0] if schedule else {}
+            if first_slot.get('ukupno_mjesta') == 3:
+                print("   ✅ Schedule correctly shows ukupno_mjesta: 3")
+            else:
+                print(f"   ⚠️  Schedule shows ukupno_mjesta: {first_slot.get('ukupno_mjesta', 'unknown')}")
         
         # Test studio info endpoint
         studio_info = self.run_test("Get Studio Info", "GET", "studio-info", 200)
         if studio_info and isinstance(studio_info, dict):
             print(f"   Studio: {studio_info.get('naziv', 'Unknown')}")
+
+        # Test invite endpoint (public)
+        # This should return 404 for non-existent invite, which is expected
+        self.run_test("Get Invite Details (404 expected)", "GET", "invites/non-existent-id", 404)
 
     def test_phone_auth_flow(self):
         """Test phone authentication flow"""
