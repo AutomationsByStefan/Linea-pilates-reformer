@@ -1047,6 +1047,8 @@ async def get_user_stats(request: Request):
     created_at = user_doc.get("created_at")
     if isinstance(created_at, str):
         created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+    if created_at and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
     weeks_active = max(1, (datetime.now(timezone.utc) - created_at).days // 7) if created_at else 1
     
     return {
