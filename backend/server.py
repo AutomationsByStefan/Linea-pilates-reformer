@@ -925,20 +925,21 @@ async def get_schedule():
     schedule = []
     
     instructors = ["Ana Marić", "Maja Kovač", "Ivana Petrović"]
-    times = ["09:00", "10:00", "11:00", "16:00", "17:00", "18:00", "19:00"]
+    # 4 morning slots (09:00-12:00) and 4 afternoon slots (16:00-19:00)
+    times = ["09:00", "10:00", "11:00", "12:00", "16:00", "17:00", "18:00", "19:00"]
     
-    for day_offset in range(14):  # Extended to 14 days
+    for day_offset in range(30):  # Extended to 30 days for full month view
         date = now + timedelta(days=day_offset)
         for idx, time in enumerate(times):
-            # Vary available spots (1-3 for more realistic small group)
-            available = 1 + ((day_offset + idx) % 3)
+            # Vary available spots (0-3 for realistic availability)
+            available = (day_offset + idx) % 4  # 0, 1, 2, or 3
             schedule.append({
                 "id": f"slot_{date.strftime('%Y%m%d')}_{time.replace(':', '')}",
                 "datum": date.strftime("%Y-%m-%d"),
                 "vrijeme": time,
                 "instruktor": instructors[(day_offset + idx) % 3],
                 "slobodna_mjesta": available,
-                "ukupno_mjesta": 3,  # Changed from 6 to 3
+                "ukupno_mjesta": 3,
                 "trajanje": 50
             })
     
