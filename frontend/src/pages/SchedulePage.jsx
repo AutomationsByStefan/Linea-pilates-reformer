@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Calendar, Clock, User, Users, Share2, Check, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { ChevronLeft, ChevronRight, Share2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import {
@@ -13,13 +13,13 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const SchedulePage = () => {
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState(null);
   const [schedule, setSchedule] = useState([]);
-  const [selectedDate, setSelectedDate] = useState(new Date());
   const [loading, setLoading] = useState(true);
   const [bookingSlot, setBookingSlot] = useState(null);
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [bookedTrainingId, setBookedTrainingId] = useState(null);
-  const scrollRef = useRef(null);
 
   useEffect(() => {
     const fetchSchedule = async () => {
@@ -39,41 +39,91 @@ const SchedulePage = () => {
     fetchSchedule();
   }, []);
 
-  // Generate 14 days of dates for horizontal scroll
-  const getWeekDates = () => {
-    const dates = [];
-    const today = new Date();
-    for (let i = 0; i < 14; i++) {
-      const date = new Date(today);
-      date.setDate(today.getDate() + i);
-      dates.push(date);
+  // Calendar helpers
+  const months = ['Januar', 'Februar', 'Mart', 'April', 'Maj', 'Juni', 
+                  'Juli', 'August', 'Septembar', 'Oktobar', 'Novembar', 'Decembar'];
+  const days = ['Pon', 'Uto', 'Sri', 'Čet', 'Pet', 'Sub', 'Ned'];
+
+  const getDaysInMonth = (date) => {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const daysInMonth = lastDay.getDate();
+    
+    // Get the day of week for the first day (0 = Sunday, adjust for Monday start)
+    let startDay = firstDay.getDay() - 1;
+    if (startDay < 0) startDay = 6;
+    
+    const days = [];
+    
+    // Add empty slots for days before the first day of month
+    for (let i = 0; i < startDay; i++) {
+      days.push(null);
     }
-    return dates;
+    
+    // Add days of the month
+    for (let i = 1; i <= daysInMonth; i++) {
+      days.push(new Date(year, month, i));
+    }
+    
+    return days;
   };
 
-  const weekDates = getWeekDates();
-
-  const formatDay = (date) => {
-    const days = ['Ned', 'Pon', 'Uto', 'Sri', 'Čet', 'Pet', 'Sub'];
-    return days[date.getDay()];
+  const isToday = (date) => {
+    if (!date) return false;
+    const today = new Date();
+    return date.toDateString() === today.toDateString();
   };
 
-  const formatMonth = (date) => {
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'Maj', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dec'];
-    return months[date.getMonth()];
+  const isSelected = (date) => {
+    if (!date || !selectedDate) return false;
+    return date.toDateString() === selectedDate.toDateString();
   };
 
-  const formatDateNum = (date) => {
-    return date.getDate();
+  const isPast = (date) => {
+    if (!date) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return date < today;
   };
 
-  const isSameDay = (date1, date2) => {
-    return date1.toDateString() === date2.toDateString();
+  const hasSlots = (date) => {
+    if (!date) return false;
+    const dateStr = date.toISOString().split('T')[0];
+    return schedule.some(s => s.datum === dateStr);
   };
 
-  const filteredSchedule = schedule.filter(slot => {
-    const slotDate = new Date(slot.datum);
-    return isSameDay(slotDate, selectedDate);
+  const prevMonth = () => {
+    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1));
+    setSelectedDate(null);
+  };
+
+  const nextMonth = () => {
+    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1));
+    setSelectedDate(null);
+  };
+
+  const calendarDays = getDaysInMonth(currentMonth);
+
+  // Get slots for selected date
+  const getSelectedDateSlots = () => {
+    if (!selectedDate) return [];
+    const dateStr = selectedDate.toISOString().split('T')[0];
+    return schedule.filter(s => s.datum === dateStr);
+  };
+
+  const selectedSlots = getSelectedDateSlots();
+  
+  // Separate morning and afternoon slots
+  const morningSlots = selectedSlots.filter(s => {
+    const hour = parseInt(s.vrijeme.split(':')[0]);
+    return hour < 14;
+  });
+  
+  const afternoonSlots = selectedSlots.filter(s => {
+    const hour = parseInt(s.vrijeme.split(':')[0]);
+    return hour >= 14;
   });
 
   const handleBook = async (slot) => {
@@ -131,7 +181,6 @@ const SchedulePage = () => {
       const data = await response.json();
 
       if (response.ok && method === 'link') {
-        // Copy share link to clipboard
         const shareUrl = `${window.location.origin}${data.share_link}`;
         await navigator.clipboard.writeText(shareUrl);
         toast.success('Link kopiran! Podijelite ga s prijateljicom.');
@@ -143,137 +192,149 @@ const SchedulePage = () => {
     setShowShareDialog(false);
   };
 
+  const formatSelectedDate = () => {
+    if (!selectedDate) return '';
+    const daysLong = ['Nedjelja', 'Ponedjeljak', 'Utorak', 'Srijeda', 'Četvrtak', 'Petak', 'Subota'];
+    return `${daysLong[selectedDate.getDay()]}, ${selectedDate.getDate()}. ${months[selectedDate.getMonth()].toLowerCase()}`;
+  };
+
   return (
-    <div className="px-6 pt-6 pb-4" data-testid="schedule-page">
+    <div className="px-4 pt-4 pb-4" data-testid="schedule-page">
       {/* Header */}
-      <div className="mb-6 animate-fade-in">
-        <h1 className="font-heading text-2xl text-foreground mb-2">
+      <div className="mb-4 animate-fade-in">
+        <h1 className="font-heading text-2xl text-foreground mb-1">
           Termini
         </h1>
-        <p className="text-muted-foreground">
-          Odaberite datum i rezervišite trening
+        <p className="text-muted-foreground text-sm">
+          Odaberite datum za prikaz termina
         </p>
       </div>
 
-      {/* Horizontal Scrollable Calendar Strip */}
-      <div className="mb-6 animate-slide-up delay-100">
-        <div 
-          ref={scrollRef}
-          className="flex gap-2 overflow-x-auto hide-scrollbar pb-2 -mx-6 px-6"
-        >
-          {weekDates.map((date, index) => {
-            const isSelected = isSameDay(date, selectedDate);
-            const isToday = isSameDay(date, new Date());
-            
-            return (
-              <button
-                key={index}
-                onClick={() => setSelectedDate(date)}
-                className={`flex flex-col items-center justify-center min-w-[4.5rem] h-24 rounded-2xl transition-all duration-200 flex-shrink-0 ${
-                  isSelected 
-                    ? 'gradient-gold text-white shadow-soft' 
-                    : 'bg-white border border-border hover:border-primary/30'
-                }`}
-                data-testid={`date-selector-${index}`}
-              >
-                <span className={`text-xs font-medium ${isSelected ? 'text-white/80' : 'text-muted-foreground'}`}>
-                  {formatDay(date)}
-                </span>
-                <span className={`text-2xl font-semibold mt-1 ${isSelected ? 'text-white' : 'text-foreground'}`}>
-                  {formatDateNum(date)}
-                </span>
-                <span className={`text-xs ${isSelected ? 'text-white/70' : 'text-muted-foreground'}`}>
-                  {formatMonth(date)}
-                </span>
-                {isToday && !isSelected && (
-                  <div className="w-1.5 h-1.5 rounded-full bg-primary mt-1" />
-                )}
-              </button>
-            );
-          })}
+      {/* Calendar */}
+      <div className="card-linea mb-4 animate-slide-up delay-100">
+        {/* Month navigation */}
+        <div className="flex items-center justify-between mb-4">
+          <button
+            onClick={prevMonth}
+            className="p-2 hover:bg-secondary rounded-full transition-colors"
+            data-testid="prev-month-btn"
+          >
+            <ChevronLeft className="w-5 h-5 text-foreground" />
+          </button>
+          <h2 className="font-heading text-lg text-foreground">
+            {months[currentMonth.getMonth()]} {currentMonth.getFullYear()}
+          </h2>
+          <button
+            onClick={nextMonth}
+            className="p-2 hover:bg-secondary rounded-full transition-colors"
+            data-testid="next-month-btn"
+          >
+            <ChevronRight className="w-5 h-5 text-foreground" />
+          </button>
+        </div>
+
+        {/* Day headers */}
+        <div className="grid grid-cols-7 gap-1 mb-2">
+          {days.map((day) => (
+            <div key={day} className="text-center text-xs font-medium text-muted-foreground py-1">
+              {day}
+            </div>
+          ))}
+        </div>
+
+        {/* Calendar grid */}
+        <div className="grid grid-cols-7 gap-1">
+          {calendarDays.map((date, index) => (
+            <button
+              key={index}
+              onClick={() => date && !isPast(date) && setSelectedDate(date)}
+              disabled={!date || isPast(date)}
+              className={`
+                aspect-square flex items-center justify-center text-sm rounded-xl transition-all duration-200
+                ${!date ? 'invisible' : ''}
+                ${isPast(date) ? 'text-muted-foreground/40 cursor-not-allowed' : ''}
+                ${isSelected(date) ? 'gradient-gold text-white font-semibold' : ''}
+                ${isToday(date) && !isSelected(date) ? 'ring-2 ring-primary ring-inset font-semibold' : ''}
+                ${!isPast(date) && !isSelected(date) && hasSlots(date) ? 'hover:bg-secondary cursor-pointer' : ''}
+                ${!isPast(date) && !isSelected(date) ? 'text-foreground' : ''}
+              `}
+              data-testid={date ? `calendar-day-${date.getDate()}` : undefined}
+            >
+              {date?.getDate()}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Selected Date Header */}
-      <div className="flex items-center gap-2 mb-4 animate-slide-up delay-200">
-        <Calendar className="w-5 h-5 text-primary" />
-        <span className="font-medium text-foreground">
-          {(() => {
-            const days = ['Nedjelja', 'Ponedjeljak', 'Utorak', 'Srijeda', 'Četvrtak', 'Petak', 'Subota'];
-            const months = ['januar', 'februar', 'mart', 'april', 'maj', 'juni', 'juli', 'august', 'septembar', 'oktobar', 'novembar', 'decembar'];
-            return `${days[selectedDate.getDay()]}, ${selectedDate.getDate()}. ${months[selectedDate.getMonth()]}`;
-          })()}
-        </span>
-      </div>
-
-      {/* Schedule List */}
-      <div className="space-y-3 animate-slide-up delay-300">
-        {loading ? (
-          <>
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="card-linea animate-pulse h-24" />
-            ))}
-          </>
-        ) : filteredSchedule.length > 0 ? (
-          filteredSchedule.map((slot) => (
-            <div
-              key={slot.id}
-              className="card-linea"
-              data-testid="schedule-slot-card"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 rounded-2xl bg-secondary flex flex-col items-center justify-center">
-                    <Clock className="w-5 h-5 text-primary mb-0.5" />
-                    <span className="text-xs font-semibold text-foreground">{slot.vrijeme}</span>
-                  </div>
-                  <div>
-                    <p className="font-medium text-foreground mb-1">
-                      Reformer Pilates
-                    </p>
-                    <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <User className="w-3.5 h-3.5" />
-                        {slot.instruktor}
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <Users className="w-3.5 h-3.5" />
-                        {slot.slobodna_mjesta}/{slot.ukupno_mjesta}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <Button
-                  onClick={() => handleBook(slot)}
-                  disabled={slot.slobodna_mjesta === 0 || bookingSlot === slot.id}
-                  className={`h-10 px-4 rounded-full text-sm font-medium ${
-                    slot.slobodna_mjesta > 0 
-                      ? 'btn-primary' 
-                      : 'bg-muted text-muted-foreground cursor-not-allowed'
-                  }`}
-                  data-testid="book-slot-btn"
-                >
-                  {bookingSlot === slot.id ? '...' : slot.slobodna_mjesta > 0 ? 'Rezerviši' : 'Popunjeno'}
-                </Button>
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="card-linea text-center py-12" data-testid="no-schedule">
-            <Calendar className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-            <p className="text-muted-foreground">
-              Nema dostupnih termina za ovaj datum
+      {/* Time slots for selected date */}
+      {selectedDate && (
+        <div className="animate-fade-in">
+          <div className="text-center mb-3">
+            <p className="text-sm font-medium text-primary">
+              {formatSelectedDate()}
             </p>
           </div>
-        )}
-      </div>
 
-      {/* Info */}
-      <div className="mt-6 p-4 bg-secondary/50 rounded-2xl animate-slide-up delay-400">
-        <p className="text-sm text-muted-foreground text-center">
-          Trajanje treninga: <span className="text-foreground font-medium">50 minuta</span>
-        </p>
-      </div>
+          {loading ? (
+            <div className="grid grid-cols-4 gap-2">
+              {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                <div key={i} className="h-20 bg-secondary/50 rounded-xl animate-pulse" />
+              ))}
+            </div>
+          ) : selectedSlots.length > 0 ? (
+            <div className="space-y-3">
+              {/* Morning slots */}
+              {morningSlots.length > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2 text-center">Prijepodne</p>
+                  <div className="grid grid-cols-4 gap-2">
+                    {morningSlots.map((slot) => (
+                      <SlotCard
+                        key={slot.id}
+                        slot={slot}
+                        onBook={handleBook}
+                        isBooking={bookingSlot === slot.id}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Afternoon slots */}
+              {afternoonSlots.length > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2 text-center">Poslijepodne</p>
+                  <div className="grid grid-cols-4 gap-2">
+                    {afternoonSlots.map((slot) => (
+                      <SlotCard
+                        key={slot.id}
+                        slot={slot}
+                        onBook={handleBook}
+                        isBooking={bookingSlot === slot.id}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-8 bg-secondary/30 rounded-2xl">
+              <p className="text-muted-foreground text-sm">
+                Nema dostupnih termina
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Hint when no date selected */}
+      {!selectedDate && (
+        <div className="text-center py-8 bg-secondary/30 rounded-2xl animate-slide-up delay-200">
+          <p className="text-muted-foreground text-sm">
+            Kliknite na datum za prikaz termina
+          </p>
+        </div>
+      )}
 
       {/* Share Dialog */}
       <Dialog open={showShareDialog} onOpenChange={setShowShareDialog}>
@@ -305,6 +366,47 @@ const SchedulePage = () => {
           </div>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+};
+
+// Compact Slot Card Component
+const SlotCard = ({ slot, onBook, isBooking }) => {
+  const isFull = slot.slobodna_mjesta === 0;
+  
+  return (
+    <div 
+      className={`
+        rounded-xl p-2 flex flex-col items-center justify-between
+        ${isFull ? 'bg-muted/50' : 'bg-white border border-border'}
+      `}
+      data-testid="schedule-slot-card"
+    >
+      {/* Time */}
+      <p className={`text-base font-semibold ${isFull ? 'text-muted-foreground' : 'text-foreground'}`}>
+        {slot.vrijeme}
+      </p>
+      
+      {/* Available spots */}
+      <p className={`text-xs ${isFull ? 'text-muted-foreground' : 'text-primary'}`}>
+        {slot.slobodna_mjesta}/{slot.ukupno_mjesta}
+      </p>
+      
+      {/* Book button */}
+      <button
+        onClick={() => !isFull && onBook(slot)}
+        disabled={isFull || isBooking}
+        className={`
+          mt-1 w-full py-1.5 rounded-lg text-xs font-medium transition-all
+          ${isFull 
+            ? 'bg-muted text-muted-foreground cursor-not-allowed' 
+            : 'gradient-gold text-white active:scale-95'
+          }
+        `}
+        data-testid="book-slot-btn"
+      >
+        {isBooking ? '...' : isFull ? 'Puno' : 'Rezerviši'}
+      </button>
     </div>
   );
 };
