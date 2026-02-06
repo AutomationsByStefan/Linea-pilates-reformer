@@ -66,6 +66,7 @@ class Membership(BaseModel):
     preostali_termini: int
     ukupni_termini: int
     datum_isteka: datetime
+    datum_pocetka: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class Training(BaseModel):
@@ -75,8 +76,30 @@ class Training(BaseModel):
     datum: datetime
     vrijeme: str
     instruktor: str
-    tip: str  # "predstojeći" or "prethodni"
+    tip: str  # "predstojeći" or "prethodni" or "završen"
     trajanje: int = 50
+    feedback_submitted: bool = False
+
+class BookingRequest(BaseModel):
+    slot_id: str
+    datum: str
+    vrijeme: str
+    instruktor: str
+
+class FeedbackRequest(BaseModel):
+    training_id: str
+    fizicko_stanje: int  # 1-5
+    kvalitet_treninga: int  # 1-5
+    osjecaj_napretka: int  # 1-5
+
+class WeightEntry(BaseModel):
+    weight: float
+    date: Optional[str] = None
+
+class ShareInviteRequest(BaseModel):
+    training_id: str
+    recipient_user_id: Optional[str] = None  # For in-app sharing
+    generate_link: bool = False  # For external sharing
 
 # ============== HELPER FUNCTIONS ==============
 
@@ -118,6 +141,14 @@ async def get_current_user(request: Request) -> User:
     
     return User(**user_doc)
 
+def format_bosnian_date(dt):
+    """Format date in Bosnian"""
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
+    months = ['januar', 'februar', 'mart', 'april', 'maj', 'juni', 
+              'juli', 'august', 'septembar', 'oktobar', 'novembar', 'decembar']
+    return f"{dt.day}. {months[dt.month - 1]} {dt.year}."
+
 # ============== AUTH ENDPOINTS ==============
 
 @api_router.post("/auth/session")
@@ -151,12 +182,13 @@ async def create_session(request: Request, response: Response):
     
     if existing_user:
         user_id = existing_user["user_id"]
-        # Update user info
+        # Update user info and last activity
         await db.users.update_one(
             {"user_id": user_id},
             {"$set": {
                 "name": auth_data["name"],
-                "picture": auth_data.get("picture")
+                "picture": auth_data.get("picture"),
+                "last_activity": datetime.now(timezone.utc).isoformat()
             }}
         )
     else:
@@ -167,7 +199,8 @@ async def create_session(request: Request, response: Response):
             "email": auth_data["email"],
             "name": auth_data["name"],
             "picture": auth_data.get("picture"),
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_activity": datetime.now(timezone.utc).isoformat()
         }
         await db.users.insert_one(new_user)
         
@@ -209,6 +242,13 @@ async def create_session(request: Request, response: Response):
 async def get_me(request: Request):
     """Get current authenticated user"""
     user = await get_current_user(request)
+    
+    # Update last activity
+    await db.users.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
+    )
+    
     return user.model_dump()
 
 @api_router.post("/auth/logout")
@@ -270,6 +310,12 @@ async def verify_otp(data: PhoneVerifyRequest, response: Response):
     if not user_doc:
         raise HTTPException(status_code=404, detail="Korisnik nije pronađen, potrebna registracija")
     
+    # Update last activity
+    await db.users.update_one(
+        {"user_id": user_doc["user_id"]},
+        {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
+    )
+    
     # Create session
     session_token = str(uuid.uuid4())
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
@@ -316,7 +362,8 @@ async def register_user(data: RegisterRequest, response: Response):
         "phone": data.phone,
         "name": f"{data.ime} {data.prezime}",
         "email": data.email,
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_activity": datetime.now(timezone.utc).isoformat()
     }
     await db.users.insert_one(new_user)
     
@@ -355,7 +402,9 @@ async def register_user(data: RegisterRequest, response: Response):
 
 async def create_mock_data_for_user(user_id: str):
     """Create mock memberships and trainings for new user"""
-    # Create mock membership
+    now = datetime.now(timezone.utc)
+    
+    # Create mock membership with start date
     membership = {
         "id": str(uuid.uuid4()),
         "user_id": user_id,
@@ -363,8 +412,9 @@ async def create_mock_data_for_user(user_id: str):
         "tip": "aktivna",
         "preostali_termini": 8,
         "ukupni_termini": 12,
-        "datum_isteka": (datetime.now(timezone.utc) + timedelta(days=25)).isoformat(),
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "datum_pocetka": now.isoformat(),
+        "datum_isteka": (now + timedelta(days=30)).isoformat(),
+        "created_at": now.isoformat()
     }
     await db.memberships.insert_one(membership)
     
@@ -372,12 +422,13 @@ async def create_mock_data_for_user(user_id: str):
     training = {
         "id": str(uuid.uuid4()),
         "user_id": user_id,
-        "datum": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+        "datum": (now + timedelta(days=2)).isoformat(),
         "vrijeme": "10:00",
         "instruktor": "Ana Marić",
         "tip": "predstojeći",
         "trajanje": 50,
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "feedback_submitted": False,
+        "created_at": now.isoformat()
     }
     await db.trainings.insert_one(training)
 
@@ -430,10 +481,440 @@ async def get_past_trainings(request: Request):
     """Get user's past trainings"""
     user = await get_current_user(request)
     trainings = await db.trainings.find(
-        {"user_id": user.user_id, "tip": "prethodni"},
+        {"user_id": user.user_id, "tip": {"$in": ["prethodni", "završen"]}},
         {"_id": 0}
     ).to_list(100)
     return trainings
+
+@api_router.get("/trainings/{training_id}")
+async def get_training(training_id: str, request: Request):
+    """Get single training by ID"""
+    user = await get_current_user(request)
+    training = await db.trainings.find_one(
+        {"id": training_id, "user_id": user.user_id},
+        {"_id": 0}
+    )
+    if not training:
+        raise HTTPException(status_code=404, detail="Trening nije pronađen")
+    return training
+
+# ============== BOOKING ==============
+
+@api_router.post("/bookings")
+async def create_booking(data: BookingRequest, request: Request):
+    """Book a training slot"""
+    user = await get_current_user(request)
+    
+    # Check available spots (mock - always allow for now)
+    # In real implementation, check against actual slot capacity
+    
+    # Check if user has active membership with remaining slots
+    membership = await db.memberships.find_one(
+        {"user_id": user.user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}},
+        {"_id": 0}
+    )
+    
+    if not membership:
+        raise HTTPException(status_code=400, detail="Nemate aktivnu članarinu ili preostalih termina")
+    
+    # Create training record
+    training_id = str(uuid.uuid4())
+    training = {
+        "id": training_id,
+        "user_id": user.user_id,
+        "slot_id": data.slot_id,
+        "datum": data.datum,
+        "vrijeme": data.vrijeme,
+        "instruktor": data.instruktor,
+        "tip": "predstojeći",
+        "trajanje": 50,
+        "feedback_submitted": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.trainings.insert_one(training)
+    
+    # Decrement membership slots
+    await db.memberships.update_one(
+        {"id": membership["id"]},
+        {"$inc": {"preostali_termini": -1}}
+    )
+    
+    # Update last activity
+    await db.users.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    return {
+        "success": True,
+        "training_id": training_id,
+        "message": "Termin je uspješno rezervisan!"
+    }
+
+# ============== SHARE TRAINING ==============
+
+@api_router.post("/trainings/share")
+async def share_training(data: ShareInviteRequest, request: Request):
+    """Share training with a friend"""
+    user = await get_current_user(request)
+    
+    # Get the training
+    training = await db.trainings.find_one(
+        {"id": data.training_id, "user_id": user.user_id},
+        {"_id": 0}
+    )
+    
+    if not training:
+        raise HTTPException(status_code=404, detail="Trening nije pronađen")
+    
+    invite_id = str(uuid.uuid4())
+    
+    if data.generate_link:
+        # Generate shareable link
+        invite = {
+            "id": invite_id,
+            "type": "link",
+            "training_id": data.training_id,
+            "sender_user_id": user.user_id,
+            "sender_name": user.name,
+            "datum": training["datum"],
+            "vrijeme": training["vrijeme"],
+            "instruktor": training["instruktor"],
+            "status": "pending",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+        }
+        await db.training_invites.insert_one(invite)
+        
+        return {
+            "success": True,
+            "invite_id": invite_id,
+            "share_link": f"/pozivnica/{invite_id}",
+            "message": "Link za dijeljenje je kreiran"
+        }
+    
+    elif data.recipient_user_id:
+        # In-app sharing
+        recipient = await db.users.find_one(
+            {"user_id": data.recipient_user_id},
+            {"_id": 0}
+        )
+        
+        if not recipient:
+            raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
+        
+        # Create invite notification
+        invite = {
+            "id": invite_id,
+            "type": "in_app",
+            "training_id": data.training_id,
+            "sender_user_id": user.user_id,
+            "sender_name": user.name,
+            "recipient_user_id": data.recipient_user_id,
+            "datum": training["datum"],
+            "vrijeme": training["vrijeme"],
+            "instruktor": training["instruktor"],
+            "status": "pending",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.training_invites.insert_one(invite)
+        
+        # Create notification for recipient
+        notification = {
+            "id": str(uuid.uuid4()),
+            "user_id": data.recipient_user_id,
+            "type": "training_invite",
+            "title": "Poziv na trening",
+            "message": f"Tvoja prijateljica te poziva na zajednički Pilates Reformer trening 💪\nTermin: {format_bosnian_date(training['datum'])} u {training['vrijeme']}",
+            "data": {"invite_id": invite_id},
+            "read": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.notifications.insert_one(notification)
+        
+        return {
+            "success": True,
+            "invite_id": invite_id,
+            "message": "Poziv je poslan"
+        }
+    
+    raise HTTPException(status_code=400, detail="Morate navesti korisnika ili zatražiti link")
+
+@api_router.post("/trainings/invites/{invite_id}/accept")
+async def accept_training_invite(invite_id: str, request: Request):
+    """Accept a training invite"""
+    user = await get_current_user(request)
+    
+    invite = await db.training_invites.find_one(
+        {"id": invite_id},
+        {"_id": 0}
+    )
+    
+    if not invite:
+        raise HTTPException(status_code=404, detail="Pozivnica nije pronađena")
+    
+    if invite["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Pozivnica je već iskorištena")
+    
+    # Check available spots (mock check - in real implementation check actual capacity)
+    # For now, simulate random availability
+    import random
+    spots_available = random.choice([True, True, True, False])  # 75% chance of availability
+    
+    if not spots_available:
+        return {
+            "success": False,
+            "message": "Nažalost, ovaj termin je upravo popunjen 😕\nMolimo te da odabereš drugi dostupni termin."
+        }
+    
+    # Check if user has membership
+    membership = await db.memberships.find_one(
+        {"user_id": user.user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}},
+        {"_id": 0}
+    )
+    
+    if not membership:
+        raise HTTPException(status_code=400, detail="Nemate aktivnu članarinu ili preostalih termina")
+    
+    # Create training for the user
+    training = {
+        "id": str(uuid.uuid4()),
+        "user_id": user.user_id,
+        "datum": invite["datum"],
+        "vrijeme": invite["vrijeme"],
+        "instruktor": invite["instruktor"],
+        "tip": "predstojeći",
+        "trajanje": 50,
+        "feedback_submitted": False,
+        "invited_by": invite["sender_user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.trainings.insert_one(training)
+    
+    # Decrement membership slots
+    await db.memberships.update_one(
+        {"id": membership["id"]},
+        {"$inc": {"preostali_termini": -1}}
+    )
+    
+    # Update invite status
+    await db.training_invites.update_one(
+        {"id": invite_id},
+        {"$set": {"status": "accepted", "accepted_by": user.user_id}}
+    )
+    
+    return {
+        "success": True,
+        "message": "Termin je uspješno rezervisan! Vidimo se na treningu."
+    }
+
+@api_router.get("/trainings/invites/pending")
+async def get_pending_invites(request: Request):
+    """Get pending training invites for user"""
+    user = await get_current_user(request)
+    
+    invites = await db.training_invites.find(
+        {"recipient_user_id": user.user_id, "status": "pending"},
+        {"_id": 0}
+    ).to_list(100)
+    
+    return invites
+
+@api_router.get("/invites/{invite_id}")
+async def get_invite_details(invite_id: str):
+    """Get invite details (public endpoint for share links)"""
+    invite = await db.training_invites.find_one(
+        {"id": invite_id},
+        {"_id": 0}
+    )
+    
+    if not invite:
+        raise HTTPException(status_code=404, detail="Pozivnica nije pronađena")
+    
+    return invite
+
+# ============== FEEDBACK ==============
+
+@api_router.post("/feedback")
+async def submit_feedback(data: FeedbackRequest, request: Request):
+    """Submit feedback for a completed training"""
+    user = await get_current_user(request)
+    
+    # Validate ratings
+    for rating in [data.fizicko_stanje, data.kvalitet_treninga, data.osjecaj_napretka]:
+        if not 1 <= rating <= 5:
+            raise HTTPException(status_code=400, detail="Ocjene moraju biti između 1 i 5")
+    
+    # Check if training exists and belongs to user
+    training = await db.trainings.find_one(
+        {"id": data.training_id, "user_id": user.user_id},
+        {"_id": 0}
+    )
+    
+    if not training:
+        raise HTTPException(status_code=404, detail="Trening nije pronađen")
+    
+    if training.get("feedback_submitted"):
+        raise HTTPException(status_code=400, detail="Povratna informacija je već poslana za ovaj trening")
+    
+    # Save feedback
+    feedback = {
+        "id": str(uuid.uuid4()),
+        "user_id": user.user_id,
+        "training_id": data.training_id,
+        "training_date": training["datum"],
+        "fizicko_stanje": data.fizicko_stanje,
+        "kvalitet_treninga": data.kvalitet_treninga,
+        "osjecaj_napretka": data.osjecaj_napretka,
+        "average": round((data.fizicko_stanje + data.kvalitet_treninga + data.osjecaj_napretka) / 3, 1),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.training_feedback.insert_one(feedback)
+    
+    # Mark training as feedback submitted
+    await db.trainings.update_one(
+        {"id": data.training_id},
+        {"$set": {"feedback_submitted": True}}
+    )
+    
+    return {
+        "success": True,
+        "message": "Hvala na povratnoj informaciji! 💪"
+    }
+
+@api_router.get("/feedback/pending")
+async def get_pending_feedback(request: Request):
+    """Get trainings that need feedback (completed but no feedback submitted)"""
+    user = await get_current_user(request)
+    
+    # Get completed trainings without feedback
+    trainings = await db.trainings.find(
+        {
+            "user_id": user.user_id,
+            "tip": {"$in": ["završen", "prethodni"]},
+            "feedback_submitted": {"$ne": True}
+        },
+        {"_id": 0}
+    ).to_list(10)
+    
+    return trainings
+
+@api_router.get("/feedback/history")
+async def get_feedback_history(request: Request):
+    """Get user's feedback history"""
+    user = await get_current_user(request)
+    
+    feedback = await db.training_feedback.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    
+    return feedback
+
+# ============== WEIGHT TRACKING ==============
+
+@api_router.post("/weight")
+async def add_weight_entry(data: WeightEntry, request: Request):
+    """Add a weight entry"""
+    user = await get_current_user(request)
+    
+    entry_date = data.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    entry = {
+        "id": str(uuid.uuid4()),
+        "user_id": user.user_id,
+        "weight": data.weight,
+        "date": entry_date,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # Update or insert for the same date
+    await db.weight_entries.update_one(
+        {"user_id": user.user_id, "date": entry_date},
+        {"$set": entry},
+        upsert=True
+    )
+    
+    return {
+        "success": True,
+        "message": "Težina je zabilježena"
+    }
+
+@api_router.get("/weight")
+async def get_weight_history(request: Request):
+    """Get user's weight history"""
+    user = await get_current_user(request)
+    
+    entries = await db.weight_entries.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("date", -1).to_list(100)
+    
+    return entries
+
+@api_router.delete("/weight/{entry_id}")
+async def delete_weight_entry(entry_id: str, request: Request):
+    """Delete a weight entry"""
+    user = await get_current_user(request)
+    
+    result = await db.weight_entries.delete_one(
+        {"id": entry_id, "user_id": user.user_id}
+    )
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Unos nije pronađen")
+    
+    return {"success": True, "message": "Unos je obrisan"}
+
+# ============== NOTIFICATIONS ==============
+
+@api_router.get("/notifications")
+async def get_notifications(request: Request):
+    """Get user's notifications"""
+    user = await get_current_user(request)
+    
+    notifications = await db.notifications.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    
+    return notifications
+
+@api_router.get("/notifications/unread")
+async def get_unread_notifications(request: Request):
+    """Get user's unread notifications"""
+    user = await get_current_user(request)
+    
+    notifications = await db.notifications.find(
+        {"user_id": user.user_id, "read": False},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    
+    return notifications
+
+@api_router.post("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, request: Request):
+    """Mark a notification as read"""
+    user = await get_current_user(request)
+    
+    await db.notifications.update_one(
+        {"id": notification_id, "user_id": user.user_id},
+        {"$set": {"read": True}}
+    )
+    
+    return {"success": True}
+
+@api_router.post("/notifications/read-all")
+async def mark_all_notifications_read(request: Request):
+    """Mark all notifications as read"""
+    user = await get_current_user(request)
+    
+    await db.notifications.update_many(
+        {"user_id": user.user_id, "read": False},
+        {"$set": {"read": True}}
+    )
+    
+    return {"success": True}
 
 # ============== SCHEDULE (MOCK DATA) ==============
 
@@ -446,16 +927,18 @@ async def get_schedule():
     instructors = ["Ana Marić", "Maja Kovač", "Ivana Petrović"]
     times = ["09:00", "10:00", "11:00", "16:00", "17:00", "18:00", "19:00"]
     
-    for day_offset in range(7):
+    for day_offset in range(14):  # Extended to 14 days
         date = now + timedelta(days=day_offset)
-        for time in times:
+        for idx, time in enumerate(times):
+            # Vary available spots (1-3 for more realistic small group)
+            available = 1 + ((day_offset + idx) % 3)
             schedule.append({
-                "id": str(uuid.uuid4()),
+                "id": f"slot_{date.strftime('%Y%m%d')}_{time.replace(':', '')}",
                 "datum": date.strftime("%Y-%m-%d"),
                 "vrijeme": time,
-                "instruktor": instructors[day_offset % 3],
-                "slobodna_mjesta": 3 + (day_offset % 4),
-                "ukupno_mjesta": 6,
+                "instruktor": instructors[(day_offset + idx) % 3],
+                "slobodna_mjesta": available,
+                "ukupno_mjesta": 3,  # Changed from 6 to 3
                 "trajanje": 50
             })
     
@@ -528,6 +1011,121 @@ async def get_studio_info():
             "ned": "Zatvoreno"
         }
     }
+
+# ============== USER STATS ==============
+
+@api_router.get("/user/stats")
+async def get_user_stats(request: Request):
+    """Get user statistics including membership info"""
+    user = await get_current_user(request)
+    
+    # Get active membership
+    membership = await db.memberships.find_one(
+        {"user_id": user.user_id, "tip": "aktivna"},
+        {"_id": 0}
+    )
+    
+    # Count completed trainings
+    completed_count = await db.trainings.count_documents(
+        {"user_id": user.user_id, "tip": {"$in": ["završen", "prethodni"]}}
+    )
+    
+    # Count upcoming trainings
+    upcoming_count = await db.trainings.count_documents(
+        {"user_id": user.user_id, "tip": "predstojeći"}
+    )
+    
+    # Get last training date
+    last_training = await db.trainings.find_one(
+        {"user_id": user.user_id, "tip": {"$in": ["završen", "prethodni"]}},
+        {"_id": 0},
+        sort=[("datum", -1)]
+    )
+    
+    # Calculate weeks active
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    created_at = user_doc.get("created_at")
+    if isinstance(created_at, str):
+        created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+    weeks_active = max(1, (datetime.now(timezone.utc) - created_at).days // 7) if created_at else 1
+    
+    return {
+        "preostali_termini": membership.get("preostali_termini", 0) if membership else 0,
+        "ukupni_termini": membership.get("ukupni_termini", 0) if membership else 0,
+        "datum_pocetka": membership.get("datum_pocetka") if membership else None,
+        "datum_isteka": membership.get("datum_isteka") if membership else None,
+        "trajanje_dana": 30,
+        "zavrseni_treninzi": completed_count,
+        "predstojeći_treninzi": upcoming_count,
+        "sedmice_aktivnosti": weeks_active,
+        "posljednji_trening": last_training.get("datum") if last_training else None
+    }
+
+# ============== INACTIVITY CHECK ==============
+
+@api_router.get("/user/activity-status")
+async def get_activity_status(request: Request):
+    """Check if user has been inactive for 7+ days"""
+    user = await get_current_user(request)
+    
+    # Get last activity
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    last_activity = user_doc.get("last_activity")
+    
+    # Get last training
+    last_training = await db.trainings.find_one(
+        {"user_id": user.user_id},
+        {"_id": 0},
+        sort=[("datum", -1)]
+    )
+    
+    # Check for upcoming trainings
+    upcoming = await db.trainings.count_documents(
+        {"user_id": user.user_id, "tip": "predstojeći"}
+    )
+    
+    # Determine inactivity
+    days_inactive = 0
+    if last_training:
+        last_date = last_training.get("datum")
+        if isinstance(last_date, str):
+            last_date = datetime.fromisoformat(last_date.replace('Z', '+00:00'))
+        if last_date.tzinfo is None:
+            last_date = last_date.replace(tzinfo=timezone.utc)
+        days_inactive = (datetime.now(timezone.utc) - last_date).days
+    
+    should_show_reminder = days_inactive >= 7 and upcoming == 0
+    
+    return {
+        "days_inactive": days_inactive,
+        "has_upcoming": upcoming > 0,
+        "should_show_reminder": should_show_reminder,
+        "reminder_message": "Nedostaješ nam u studiju 😊\nVrijeme je da rezervišeš novi Pilates Reformer trening." if should_show_reminder else None
+    }
+
+# ============== SEARCH USERS (for sharing) ==============
+
+@api_router.get("/users/search")
+async def search_users(q: str, request: Request):
+    """Search users by name or email for sharing"""
+    user = await get_current_user(request)
+    
+    if len(q) < 2:
+        return []
+    
+    # Search by name or email (exclude current user)
+    users = await db.users.find(
+        {
+            "user_id": {"$ne": user.user_id},
+            "$or": [
+                {"name": {"$regex": q, "$options": "i"}},
+                {"email": {"$regex": q, "$options": "i"}}
+            ]
+        },
+        {"_id": 0, "user_id": 1, "name": 1, "picture": 1}
+    ).to_list(10)
+    
+    return users
 
 # ============== ROOT ==============
 
