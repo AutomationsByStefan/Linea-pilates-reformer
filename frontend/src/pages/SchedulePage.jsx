@@ -1,7 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, User, Users } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Calendar, Clock, User, Users, Share2, Check, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -10,6 +16,10 @@ const SchedulePage = () => {
   const [schedule, setSchedule] = useState([]);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [loading, setLoading] = useState(true);
+  const [bookingSlot, setBookingSlot] = useState(null);
+  const [showShareDialog, setShowShareDialog] = useState(false);
+  const [bookedTrainingId, setBookedTrainingId] = useState(null);
+  const scrollRef = useRef(null);
 
   useEffect(() => {
     const fetchSchedule = async () => {
@@ -29,11 +39,11 @@ const SchedulePage = () => {
     fetchSchedule();
   }, []);
 
-  // Generate week dates
+  // Generate 14 days of dates for horizontal scroll
   const getWeekDates = () => {
     const dates = [];
     const today = new Date();
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 14; i++) {
       const date = new Date(today);
       date.setDate(today.getDate() + i);
       dates.push(date);
@@ -46,6 +56,11 @@ const SchedulePage = () => {
   const formatDay = (date) => {
     const days = ['Ned', 'Pon', 'Uto', 'Sri', 'Čet', 'Pet', 'Sub'];
     return days[date.getDay()];
+  };
+
+  const formatMonth = (date) => {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'Maj', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dec'];
+    return months[date.getMonth()];
   };
 
   const formatDateNum = (date) => {
@@ -61,8 +76,71 @@ const SchedulePage = () => {
     return isSameDay(slotDate, selectedDate);
   });
 
-  const handleBook = (slot) => {
-    toast.success(`Termin u ${slot.vrijeme} je rezervisan!`);
+  const handleBook = async (slot) => {
+    setBookingSlot(slot.id);
+    try {
+      const response = await fetch(`${API}/bookings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          slot_id: slot.id,
+          datum: slot.datum,
+          vrijeme: slot.vrijeme,
+          instruktor: slot.instruktor
+        })
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        toast.success('Termin je uspješno rezervisan! 💪');
+        setBookedTrainingId(data.training_id);
+        setShowShareDialog(true);
+        
+        // Update schedule to reflect booking
+        setSchedule(prev => prev.map(s => 
+          s.id === slot.id 
+            ? { ...s, slobodna_mjesta: Math.max(0, s.slobodna_mjesta - 1) }
+            : s
+        ));
+      } else {
+        toast.error(data.detail || 'Greška pri rezervaciji');
+      }
+    } catch (error) {
+      toast.error('Greška pri rezervaciji');
+    } finally {
+      setBookingSlot(null);
+    }
+  };
+
+  const handleShare = async (method) => {
+    if (!bookedTrainingId) return;
+
+    try {
+      const response = await fetch(`${API}/trainings/share`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          training_id: bookedTrainingId,
+          generate_link: method === 'link'
+        })
+      });
+
+      const data = await response.json();
+
+      if (response.ok && method === 'link') {
+        // Copy share link to clipboard
+        const shareUrl = `${window.location.origin}${data.share_link}`;
+        await navigator.clipboard.writeText(shareUrl);
+        toast.success('Link kopiran! Podijelite ga s prijateljicom.');
+      }
+    } catch (error) {
+      toast.error('Greška pri dijeljenju');
+    }
+
+    setShowShareDialog(false);
   };
 
   return (
@@ -77,9 +155,12 @@ const SchedulePage = () => {
         </p>
       </div>
 
-      {/* Week Calendar Strip */}
+      {/* Horizontal Scrollable Calendar Strip */}
       <div className="mb-6 animate-slide-up delay-100">
-        <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-2">
+        <div 
+          ref={scrollRef}
+          className="flex gap-2 overflow-x-auto hide-scrollbar pb-2 -mx-6 px-6"
+        >
           {weekDates.map((date, index) => {
             const isSelected = isSameDay(date, selectedDate);
             const isToday = isSameDay(date, new Date());
@@ -88,7 +169,7 @@ const SchedulePage = () => {
               <button
                 key={index}
                 onClick={() => setSelectedDate(date)}
-                className={`flex flex-col items-center justify-center min-w-[4rem] h-20 rounded-2xl transition-all duration-200 ${
+                className={`flex flex-col items-center justify-center min-w-[4.5rem] h-24 rounded-2xl transition-all duration-200 flex-shrink-0 ${
                   isSelected 
                     ? 'gradient-gold text-white shadow-soft' 
                     : 'bg-white border border-border hover:border-primary/30'
@@ -98,8 +179,11 @@ const SchedulePage = () => {
                 <span className={`text-xs font-medium ${isSelected ? 'text-white/80' : 'text-muted-foreground'}`}>
                   {formatDay(date)}
                 </span>
-                <span className={`text-xl font-semibold mt-1 ${isSelected ? 'text-white' : 'text-foreground'}`}>
+                <span className={`text-2xl font-semibold mt-1 ${isSelected ? 'text-white' : 'text-foreground'}`}>
                   {formatDateNum(date)}
+                </span>
+                <span className={`text-xs ${isSelected ? 'text-white/70' : 'text-muted-foreground'}`}>
+                  {formatMonth(date)}
                 </span>
                 {isToday && !isSelected && (
                   <div className="w-1.5 h-1.5 rounded-full bg-primary mt-1" />
@@ -161,7 +245,7 @@ const SchedulePage = () => {
                 </div>
                 <Button
                   onClick={() => handleBook(slot)}
-                  disabled={slot.slobodna_mjesta === 0}
+                  disabled={slot.slobodna_mjesta === 0 || bookingSlot === slot.id}
                   className={`h-10 px-4 rounded-full text-sm font-medium ${
                     slot.slobodna_mjesta > 0 
                       ? 'btn-primary' 
@@ -169,7 +253,7 @@ const SchedulePage = () => {
                   }`}
                   data-testid="book-slot-btn"
                 >
-                  {slot.slobodna_mjesta > 0 ? 'Rezerviši' : 'Popunjeno'}
+                  {bookingSlot === slot.id ? '...' : slot.slobodna_mjesta > 0 ? 'Rezerviši' : 'Popunjeno'}
                 </Button>
               </div>
             </div>
@@ -190,6 +274,37 @@ const SchedulePage = () => {
           Trajanje treninga: <span className="text-foreground font-medium">50 minuta</span>
         </p>
       </div>
+
+      {/* Share Dialog */}
+      <Dialog open={showShareDialog} onOpenChange={setShowShareDialog}>
+        <DialogContent className="max-w-[90%] rounded-3xl">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-xl text-center">
+              Termin rezervisan! 🎉
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <p className="text-center text-muted-foreground">
+              Želite li podijeliti ovaj termin s prijateljicom?
+            </p>
+            <Button
+              onClick={() => handleShare('link')}
+              className="w-full h-12 rounded-full btn-primary"
+              data-testid="share-link-btn"
+            >
+              <Share2 className="w-5 h-5 mr-2" />
+              Podijeli termin s prijateljicom
+            </Button>
+            <Button
+              onClick={() => setShowShareDialog(false)}
+              variant="ghost"
+              className="w-full h-10"
+            >
+              Preskoči
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
