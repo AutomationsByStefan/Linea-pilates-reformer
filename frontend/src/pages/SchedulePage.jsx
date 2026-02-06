@@ -211,22 +211,22 @@ const SchedulePage = () => {
       </div>
 
       {/* Calendar */}
-      <div className="card-linea mb-4 animate-slide-up delay-100">
+      <div className="card-linea mb-3 p-4 animate-slide-up delay-100">
         {/* Month navigation */}
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-3">
           <button
             onClick={prevMonth}
-            className="p-2 hover:bg-secondary rounded-full transition-colors"
+            className="p-1.5 hover:bg-secondary rounded-full transition-colors"
             data-testid="prev-month-btn"
           >
             <ChevronLeft className="w-5 h-5 text-foreground" />
           </button>
-          <h2 className="font-heading text-lg text-foreground">
+          <h2 className="font-heading text-base text-foreground">
             {months[currentMonth.getMonth()]} {currentMonth.getFullYear()}
           </h2>
           <button
             onClick={nextMonth}
-            className="p-2 hover:bg-secondary rounded-full transition-colors"
+            className="p-1.5 hover:bg-secondary rounded-full transition-colors"
             data-testid="next-month-btn"
           >
             <ChevronRight className="w-5 h-5 text-foreground" />
@@ -234,27 +234,27 @@ const SchedulePage = () => {
         </div>
 
         {/* Day headers */}
-        <div className="grid grid-cols-7 gap-1 mb-2">
+        <div className="grid grid-cols-7 gap-0.5 mb-1">
           {days.map((day) => (
-            <div key={day} className="text-center text-xs font-medium text-muted-foreground py-1">
+            <div key={day} className="text-center text-[10px] font-medium text-muted-foreground py-0.5">
               {day}
             </div>
           ))}
         </div>
 
-        {/* Calendar grid */}
-        <div className="grid grid-cols-7 gap-1">
+        {/* Calendar grid - compact */}
+        <div className="grid grid-cols-7 gap-0.5">
           {calendarDays.map((date, index) => (
             <button
               key={index}
               onClick={() => date && !isPast(date) && setSelectedDate(date)}
               disabled={!date || isPast(date)}
               className={`
-                aspect-square flex items-center justify-center text-sm rounded-xl transition-all duration-200
+                aspect-square flex items-center justify-center text-xs rounded-lg transition-all duration-200
                 ${!date ? 'invisible' : ''}
                 ${isPast(date) ? 'text-muted-foreground/40 cursor-not-allowed' : ''}
                 ${isSelected(date) ? 'gradient-gold text-white font-semibold' : ''}
-                ${isToday(date) && !isSelected(date) ? 'ring-2 ring-primary ring-inset font-semibold' : ''}
+                ${isToday(date) && !isSelected(date) ? 'ring-1.5 ring-primary ring-inset font-semibold' : ''}
                 ${!isPast(date) && !isSelected(date) && hasSlots(date) ? 'hover:bg-secondary cursor-pointer' : ''}
                 ${!isPast(date) && !isSelected(date) ? 'text-foreground' : ''}
               `}
@@ -269,8 +269,8 @@ const SchedulePage = () => {
       {/* Time slots for selected date */}
       {selectedDate && (
         <div className="animate-fade-in">
-          <div className="text-center mb-3">
-            <p className="text-sm font-medium text-primary">
+          <div className="text-center mb-2">
+            <p className="text-xs font-medium text-primary">
               {formatSelectedDate()}
             </p>
           </div>
@@ -278,16 +278,16 @@ const SchedulePage = () => {
           {loading ? (
             <div className="grid grid-cols-4 gap-2">
               {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-                <div key={i} className="h-20 bg-secondary/50 rounded-xl animate-pulse" />
+                <div key={i} className="h-16 bg-secondary/50 rounded-xl animate-pulse" />
               ))}
             </div>
           ) : selectedSlots.length > 0 ? (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {/* Morning slots */}
               {morningSlots.length > 0 && (
                 <div>
-                  <p className="text-xs text-muted-foreground mb-2 text-center">Prijepodne</p>
-                  <div className="grid grid-cols-4 gap-2">
+                  <p className="text-[10px] text-muted-foreground mb-1.5 text-center uppercase tracking-wider">Prijepodne</p>
+                  <div className="grid grid-cols-4 gap-1.5">
                     {morningSlots.map((slot) => (
                       <SlotCard
                         key={slot.id}
@@ -303,8 +303,8 @@ const SchedulePage = () => {
               {/* Afternoon slots */}
               {afternoonSlots.length > 0 && (
                 <div>
-                  <p className="text-xs text-muted-foreground mb-2 text-center">Poslijepodne</p>
-                  <div className="grid grid-cols-4 gap-2">
+                  <p className="text-[10px] text-muted-foreground mb-1.5 text-center uppercase tracking-wider">Poslijepodne</p>
+                  <div className="grid grid-cols-4 gap-1.5">
                     {afternoonSlots.map((slot) => (
                       <SlotCard
                         key={slot.id}
@@ -318,7 +318,7 @@ const SchedulePage = () => {
               )}
             </div>
           ) : (
-            <div className="text-center py-8 bg-secondary/30 rounded-2xl">
+            <div className="text-center py-6 bg-secondary/30 rounded-2xl">
               <p className="text-muted-foreground text-sm">
                 Nema dostupnih termina
               </p>
@@ -329,7 +329,7 @@ const SchedulePage = () => {
 
       {/* Hint when no date selected */}
       {!selectedDate && (
-        <div className="text-center py-8 bg-secondary/30 rounded-2xl animate-slide-up delay-200">
+        <div className="text-center py-6 bg-secondary/30 rounded-2xl animate-slide-up delay-200">
           <p className="text-muted-foreground text-sm">
             Kliknite na datum za prikaz termina
           </p>
@@ -377,18 +377,18 @@ const SlotCard = ({ slot, onBook, isBooking }) => {
   return (
     <div 
       className={`
-        rounded-xl p-2 flex flex-col items-center justify-between
+        rounded-xl p-1.5 flex flex-col items-center justify-between
         ${isFull ? 'bg-muted/50' : 'bg-white border border-border'}
       `}
       data-testid="schedule-slot-card"
     >
       {/* Time */}
-      <p className={`text-base font-semibold ${isFull ? 'text-muted-foreground' : 'text-foreground'}`}>
+      <p className={`text-sm font-semibold ${isFull ? 'text-muted-foreground' : 'text-foreground'}`}>
         {slot.vrijeme}
       </p>
       
       {/* Available spots */}
-      <p className={`text-xs ${isFull ? 'text-muted-foreground' : 'text-primary'}`}>
+      <p className={`text-[10px] ${isFull ? 'text-muted-foreground' : 'text-primary'}`}>
         {slot.slobodna_mjesta}/{slot.ukupno_mjesta}
       </p>
       
@@ -397,7 +397,7 @@ const SlotCard = ({ slot, onBook, isBooking }) => {
         onClick={() => !isFull && onBook(slot)}
         disabled={isFull || isBooking}
         className={`
-          mt-1 w-full py-1.5 rounded-lg text-xs font-medium transition-all
+          mt-0.5 w-full py-1 rounded-md text-[10px] font-medium transition-all
           ${isFull 
             ? 'bg-muted text-muted-foreground cursor-not-allowed' 
             : 'gradient-gold text-white active:scale-95'
