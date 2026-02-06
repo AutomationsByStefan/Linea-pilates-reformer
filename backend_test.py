@@ -261,8 +261,34 @@ class PilatesAPITester:
         return True
 
     def create_test_session(self):
+        """Create test session using the specific session token from review request"""
+        print("\n🔍 Setting up Test Session...")
+        
+        # Use the specific session token mentioned in the review request
+        self.session_token = "test_session_pilates_123"
+        print(f"   Using session token: {self.session_token}")
+        
+        # Try to test if this session works by calling /auth/me
+        try:
+            url = f"{self.api_url}/auth/me"
+            headers = {'Authorization': f'Bearer {self.session_token}'}
+            response = requests.get(url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                user_data = response.json()
+                print(f"   Session valid for user: {user_data.get('name', 'Unknown')}")
+                return True
+            else:
+                print(f"   Session token not valid (status: {response.status_code})")
+                # Fall back to creating a new session via mongosh
+                return self.create_test_session_fallback()
+        except Exception as e:
+            print(f"   Error testing session: {e}")
+            return self.create_test_session_fallback()
+
+    def create_test_session_fallback(self):
         """Create test session using mongosh as described in auth_testing.md"""
-        print("\n🔍 Creating Test Session...")
+        print("\n🔍 Creating Test Session via MongoDB...")
         
         import subprocess
         import time
@@ -272,7 +298,7 @@ class PilatesAPITester:
         mongosh_script = f'''
 use('test_database');
 var userId = 'test-user-{timestamp}';
-var sessionToken = 'test_session_{timestamp}';
+var sessionToken = 'test_session_pilates_123';
 db.users.insertOne({{
   user_id: userId,
   email: 'test.user.{timestamp}@example.com',
@@ -293,6 +319,7 @@ db.memberships.insertOne({{
   tip: 'aktivna',
   preostali_termini: 8,
   ukupni_termini: 12,
+  datum_pocetka: new Date(),
   datum_isteka: new Date(Date.now() + 25*24*60*60*1000),
   created_at: new Date()
 }});
@@ -304,6 +331,7 @@ db.trainings.insertOne({{
   instruktor: 'Ana Marić',
   tip: 'predstojeći',
   trajanje: 50,
+  feedback_submitted: false,
   created_at: new Date()
 }});
 print('SESSION_TOKEN:' + sessionToken);
@@ -323,7 +351,7 @@ print('USER_ID:' + userId);
                 for line in result.stdout.split('\n'):
                     if 'SESSION_TOKEN:' in line:
                         self.session_token = line.split('SESSION_TOKEN:')[1].strip()
-                        print(f"   Created session token: {self.session_token[:20]}...")
+                        print(f"   Created session token: {self.session_token}")
                         return True
             else:
                 print(f"   MongoDB setup failed: {result.stderr}")
