@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
@@ -15,6 +15,9 @@ import PackagesPage from "@/pages/PackagesPage";
 import ProfilePage from "@/pages/ProfilePage";
 import AllMembershipsPage from "@/pages/AllMembershipsPage";
 import AllTrainingsPage from "@/pages/AllTrainingsPage";
+import WeightTrackingPage from "@/pages/WeightTrackingPage";
+import NotificationsPage from "@/pages/NotificationsPage";
+import InvitePage from "@/pages/InvitePage";
 
 // Components
 import Layout from "@/components/Layout";
@@ -103,6 +106,7 @@ function AppRouter() {
       <Route path="/otp" element={<OTPPage />} />
       <Route path="/uslovi-koristenja" element={<TermsPage />} />
       <Route path="/politika-privatnosti" element={<PrivacyPage />} />
+      <Route path="/pozivnica/:inviteId" element={<InvitePage />} />
 
       {/* Protected routes */}
       <Route path="/" element={
@@ -160,6 +164,26 @@ function AppRouter() {
           {({ user }) => (
             <Layout user={user} hideNav>
               <AllTrainingsPage />
+            </Layout>
+          )}
+        </ProtectedRoute>
+      } />
+
+      <Route path="/tezina" element={
+        <ProtectedRoute>
+          {({ user }) => (
+            <Layout user={user} hideNav>
+              <WeightTrackingPage />
+            </Layout>
+          )}
+        </ProtectedRoute>
+      } />
+
+      <Route path="/obavjestenja" element={
+        <ProtectedRoute>
+          {({ user }) => (
+            <Layout user={user} hideNav>
+              <NotificationsPage />
             </Layout>
           )}
         </ProtectedRoute>

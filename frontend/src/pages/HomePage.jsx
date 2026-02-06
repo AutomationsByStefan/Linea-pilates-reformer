@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Phone, MapPin, ChevronRight, Calendar, Clock, User as UserIcon } from 'lucide-react';
+import { Phone, MapPin, ChevronRight, Calendar, Clock, User as UserIcon, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import FeedbackModal from '@/components/FeedbackModal';
+import InAppNotification, { useNotifications } from '@/components/InAppNotification';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -12,14 +14,23 @@ const HomePage = ({ user }) => {
   const [trainings, setTrainings] = useState([]);
   const [studioInfo, setStudioInfo] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [pendingFeedback, setPendingFeedback] = useState([]);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [selectedTrainingForFeedback, setSelectedTrainingForFeedback] = useState(null);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [activityStatus, setActivityStatus] = useState(null);
+  const [showInactivityReminder, setShowInactivityReminder] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [membershipsRes, trainingsRes, studioRes] = await Promise.all([
+        const [membershipsRes, trainingsRes, studioRes, feedbackRes, notifRes, activityRes] = await Promise.all([
           fetch(`${API}/memberships/active`, { credentials: 'include' }),
           fetch(`${API}/trainings/upcoming`, { credentials: 'include' }),
-          fetch(`${API}/studio-info`)
+          fetch(`${API}/studio-info`),
+          fetch(`${API}/feedback/pending`, { credentials: 'include' }),
+          fetch(`${API}/notifications/unread`, { credentials: 'include' }),
+          fetch(`${API}/user/activity-status`, { credentials: 'include' })
         ]);
 
         if (membershipsRes.ok) {
@@ -35,6 +46,32 @@ const HomePage = ({ user }) => {
         if (studioRes.ok) {
           const data = await studioRes.json();
           setStudioInfo(data);
+        }
+
+        if (feedbackRes.ok) {
+          const data = await feedbackRes.json();
+          setPendingFeedback(data);
+          // Show feedback modal for first pending training after a delay
+          if (data.length > 0) {
+            setTimeout(() => {
+              setSelectedTrainingForFeedback(data[0]);
+              setShowFeedbackModal(true);
+            }, 2000);
+          }
+        }
+
+        if (notifRes.ok) {
+          const data = await notifRes.json();
+          setUnreadNotifications(data.length);
+        }
+
+        if (activityRes.ok) {
+          const data = await activityRes.json();
+          setActivityStatus(data);
+          // Show inactivity reminder if needed
+          if (data.should_show_reminder && pendingFeedback.length === 0) {
+            setTimeout(() => setShowInactivityReminder(true), 3000);
+          }
         }
       } catch (error) {
         console.error('Error fetching data:', error);
@@ -56,15 +93,70 @@ const HomePage = ({ user }) => {
     return `${days[date.getDay()]}, ${date.getDate()}. ${months[date.getMonth()]}`;
   };
 
+  const handleFeedbackSuccess = () => {
+    setPendingFeedback(prev => prev.filter(t => t.id !== selectedTrainingForFeedback?.id));
+    setSelectedTrainingForFeedback(null);
+  };
+
   return (
     <div className="px-6 pt-6 pb-4" data-testid="home-page">
+      {/* Inactivity Reminder */}
+      {showInactivityReminder && activityStatus?.should_show_reminder && (
+        <div className="fixed top-4 left-4 right-4 z-50 animate-slide-up" data-testid="inactivity-reminder">
+          <div className="bg-white rounded-2xl shadow-hover p-4 border border-border/50">
+            <div className="flex gap-3">
+              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                <Bell className="w-5 h-5 text-primary" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm text-foreground whitespace-pre-line">
+                  {activityStatus.reminder_message}
+                </p>
+                <div className="flex gap-2 mt-3">
+                  <Button
+                    onClick={() => {
+                      setShowInactivityReminder(false);
+                      navigate('/termini');
+                    }}
+                    className="btn-primary h-9 text-sm"
+                  >
+                    Rezerviši termin
+                  </Button>
+                  <Button
+                    onClick={() => setShowInactivityReminder(false)}
+                    variant="ghost"
+                    className="h-9 text-sm"
+                  >
+                    Kasnije
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Section 1: Welcome Card */}
       <section className="mb-6 animate-fade-in">
         <div className="card-hero" data-testid="welcome-card">
           <div className="relative z-10">
-            <h1 className="font-heading text-2xl mb-2">
-              Zdravo, {firstName}
-            </h1>
+            <div className="flex justify-between items-start mb-2">
+              <h1 className="font-heading text-2xl">
+                Zdravo, {firstName}
+              </h1>
+              {unreadNotifications > 0 && (
+                <button
+                  onClick={() => navigate('/obavjestenja')}
+                  className="relative bg-white/20 p-2 rounded-full"
+                  data-testid="notifications-badge"
+                >
+                  <Bell className="w-5 h-5 text-white" />
+                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-white text-primary text-xs font-bold rounded-full flex items-center justify-center">
+                    {unreadNotifications}
+                  </span>
+                </button>
+              )}
+            </div>
             <p className="text-white/90 mb-4">
               Vrijeme je da rezervišeš naredni trening?
             </p>
@@ -263,26 +355,33 @@ const HomePage = ({ user }) => {
                 </div>
               </div>
               {/* Static Map Image */}
-              <div className="rounded-2xl overflow-hidden h-40 bg-muted">
+              <div className="rounded-2xl overflow-hidden h-40 bg-muted relative">
                 <img
                   src={`https://maps.googleapis.com/maps/api/staticmap?center=${studioInfo.latitude},${studioInfo.longitude}&zoom=15&size=400x200&markers=color:0xB8860B%7C${studioInfo.latitude},${studioInfo.longitude}&style=feature:all%7Celement:labels.text.fill%7Ccolor:0x746855&style=feature:all%7Celement:labels.text.stroke%7Ccolor:0xf5f1e6&style=feature:water%7Celement:geometry.fill%7Ccolor:0xc8d7d4&key=`}
                   alt="Lokacija studija"
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     e.target.onerror = null;
-                    e.target.src = `https://api.mapbox.com/styles/v1/mapbox/light-v11/static/${studioInfo.longitude},${studioInfo.latitude},14,0/400x200?access_token=pk.placeholder`;
-                    e.target.onerror = () => {
-                      e.target.src = 'https://images.unsplash.com/photo-1524661135-423995f22d0b?w=400&h=200&fit=crop';
-                    };
+                    e.target.src = 'https://images.unsplash.com/photo-1524661135-423995f22d0b?w=400&h=200&fit=crop';
                   }}
                 />
-                {/* Fallback overlay with address */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent pointer-events-none" />
               </div>
             </div>
           </div>
         )}
       </section>
+
+      {/* Feedback Modal */}
+      {showFeedbackModal && selectedTrainingForFeedback && (
+        <FeedbackModal
+          training={selectedTrainingForFeedback}
+          onClose={() => {
+            setShowFeedbackModal(false);
+            setSelectedTrainingForFeedback(null);
+          }}
+          onSuccess={handleFeedbackSuccess}
+        />
+      )}
     </div>
   );
 };
