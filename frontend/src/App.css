@@ -15,7 +15,7 @@
     background: white;
     border: 1px solid rgba(229, 211, 179, 0.5);
     border-radius: 1.5rem;
-    box-shadow: 0 4px 20px -2px rgba(184, 134, 11, 0.1);
+    box-shadow: 0 4px 20px -2px rgba(166, 139, 91, 0.1);
     padding: 1.5rem;
     position: relative;
     overflow: hidden;
@@ -27,8 +27,8 @@
 }
 
 .card-linea-interactive:hover {
-    border-color: rgba(184, 134, 11, 0.3);
-    box-shadow: 0 10px 25px -5px rgba(184, 134, 11, 0.2);
+    border-color: rgba(166, 139, 91, 0.3);
+    box-shadow: 0 10px 25px -5px rgba(166, 139, 91, 0.2);
 }
 
 .card-linea-interactive:active {
@@ -37,19 +37,19 @@
 
 /* Primary button */
 .btn-primary {
-    background: #B8860B;
+    background: #A68B5B;
     color: white;
     height: 3rem;
     padding: 0 2rem;
     border-radius: 9999px;
     font-weight: 500;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 4px 20px -2px rgba(184, 134, 11, 0.1);
+    box-shadow: 0 4px 20px -2px rgba(166, 139, 91, 0.2);
 }
 
 .btn-primary:hover {
-    background: #9A7009;
-    box-shadow: 0 10px 25px -5px rgba(184, 134, 11, 0.2);
+    background: #8B7349;
+    box-shadow: 0 10px 25px -5px rgba(166, 139, 91, 0.3);
     transform: translateY(-1px);
 }
 
@@ -75,17 +75,17 @@
 /* Outline button */
 .btn-outline {
     background: transparent;
-    color: #B8860B;
+    color: #A68B5B;
     height: 3rem;
     padding: 0 2rem;
     border-radius: 9999px;
     font-weight: 500;
-    border: 2px solid #B8860B;
+    border: 2px solid #A68B5B;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .btn-outline:hover {
-    background: rgba(184, 134, 11, 0.05);
+    background: rgba(166, 139, 91, 0.05);
 }
 
 /* Input styles */
@@ -136,7 +136,7 @@
 }
 
 .nav-item.active {
-    color: #B8860B;
+    color: #A68B5B;
 }
 
 .nav-item svg {
@@ -163,7 +163,7 @@
 
 /* Hero card with gradient */
 .card-hero {
-    background: linear-gradient(135deg, #B8860B 0%, #9A7009 100%);
+    background: linear-gradient(135deg, #A68B5B 0%, #8B7349 100%);
     color: white;
     border-radius: 1.5rem;
     padding: 1.5rem;
