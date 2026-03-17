@@ -97,12 +97,14 @@ const LoginPage = () => {
       <div className="relative flex-1 flex flex-col justify-center px-8 py-12">
         {/* Logo */}
         <div className="flex flex-col items-center mb-12 animate-fade-in">
-          <img 
-            src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/5nxfiuyl_att._hwTgC7bergolOr8J8t8MnMqBiHNjbb-rVcNJHYvkZw.jpg"
-            alt="Linea Reformer Pilates"
-            className="w-40 h-40 object-contain mb-4"
-            data-testid="login-logo"
-          />
+          <div className="w-48 h-48 bg-black rounded-3xl flex items-center justify-center mb-4 shadow-hover">
+            <img 
+              src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/ny62z2sx_linea.png"
+              alt="Linea Reformer Pilates"
+              className="w-44 h-44 object-contain"
+              data-testid="login-logo"
+            />
+          </div>
           <h1 className="font-heading text-3xl text-foreground">Dobrodošli</h1>
           <p className="text-muted-foreground mt-2 text-center">
             Prijavite se na svoj nalog

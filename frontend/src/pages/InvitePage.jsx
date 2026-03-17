@@ -71,11 +71,13 @@ const InvitePage = () => {
     return (
       <div className="mobile-container min-h-screen flex items-center justify-center bg-background">
         <div className="animate-pulse">
-          <img 
-            src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/5nxfiuyl_att._hwTgC7bergolOr8J8t8MnMqBiHNjbb-rVcNJHYvkZw.jpg"
-            alt="Linea"
-            className="w-24 h-24 object-contain"
-          />
+          <div className="w-28 h-28 bg-black rounded-2xl flex items-center justify-center">
+            <img 
+              src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/ny62z2sx_linea.png"
+              alt="Linea"
+              className="w-24 h-24 object-contain"
+            />
+          </div>
         </div>
       </div>
     );
@@ -85,11 +87,13 @@ const InvitePage = () => {
     <div className="mobile-container min-h-screen bg-background" data-testid="invite-page">
       <div className="px-6 py-12 flex flex-col items-center justify-center min-h-screen">
         {/* Logo */}
-        <img 
-          src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/5nxfiuyl_att._hwTgC7bergolOr8J8t8MnMqBiHNjbb-rVcNJHYvkZw.jpg"
-          alt="Linea Reformer Pilates"
-          className="w-32 h-32 object-contain mb-8"
-        />
+        <div className="w-36 h-36 bg-black rounded-2xl flex items-center justify-center mb-8 shadow-hover">
+          <img 
+            src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/ny62z2sx_linea.png"
+            alt="Linea Reformer Pilates"
+            className="w-32 h-32 object-contain"
+          />
+        </div>
 
         {result ? (
           // Result state
