@@ -74,7 +74,7 @@ const InvitePage = () => {
           <img 
             src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/a6j6n0os_Your%20paragraph%20text%20%281%29.png"
             alt="Linea"
-            className="w-28 h-28 object-contain"
+            className="w-44 h-44 object-contain"
           />
         </div>
       </div>
@@ -88,7 +88,7 @@ const InvitePage = () => {
         <img 
           src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/a6j6n0os_Your%20paragraph%20text%20%281%29.png"
           alt="Linea Reformer Pilates"
-          className="w-40 h-40 object-contain mb-8"
+          className="w-60 h-60 object-contain mb-8"
         />
 
         {result ? (

@@ -65,7 +65,7 @@ const AuthCallback = () => {
         <img 
           src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/a6j6n0os_Your%20paragraph%20text%20%281%29.png"
           alt="Linea Reformer Pilates"
-          className="w-32 h-32 object-contain mb-4"
+          className="w-48 h-48 object-contain mb-4"
         />
         <p className="text-muted-foreground font-body">Prijava u toku...</p>
       </div>
