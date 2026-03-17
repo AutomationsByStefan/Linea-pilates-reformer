@@ -12,23 +12,23 @@
         --card-foreground: 0 0% 16%;
         --popover: 0 0% 100%;
         --popover-foreground: 0 0% 16%;
-        --primary: 43 85% 38%;
+        --primary: 33 45% 50%;
         --primary-foreground: 0 0% 100%;
         --secondary: 34 47% 89%;
         --secondary-foreground: 0 0% 24%;
         --muted: 36 33% 91%;
         --muted-foreground: 0 0% 40%;
-        --accent: 43 68% 52%;
+        --accent: 33 50% 55%;
         --accent-foreground: 0 0% 100%;
         --destructive: 0 84% 60%;
         --destructive-foreground: 0 0% 98%;
         --border: 36 36% 80%;
         --input: 36 33% 91%;
-        --ring: 43 68% 52%;
+        --ring: 33 50% 55%;
         --radius: 1rem;
-        --chart-1: 43 85% 38%;
+        --chart-1: 33 45% 50%;
         --chart-2: 34 47% 89%;
-        --chart-3: 43 68% 52%;
+        --chart-3: 33 50% 55%;
         --chart-4: 36 36% 80%;
         --chart-5: 40 33% 98%;
     }
@@ -77,15 +77,15 @@
     }
     
     .gradient-gold {
-        background: linear-gradient(135deg, #D4AF37 0%, #B8860B 100%);
+        background: linear-gradient(135deg, #C4A574 0%, #A68B5B 100%);
     }
     
     .gradient-soft {
-        background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(212,175,55,0.1) 100%);
+        background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(196,165,116,0.1) 100%);
     }
     
     .text-gold {
-        color: #B8860B;
+        color: #A68B5B;
     }
     
     .bg-bone {
