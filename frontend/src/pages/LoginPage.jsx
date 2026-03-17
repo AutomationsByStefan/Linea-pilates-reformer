@@ -94,30 +94,30 @@ const LoginPage = () => {
       <div className="absolute inset-0 bg-gradient-to-b from-background via-background to-secondary/30 pointer-events-none" />
       
       {/* Content */}
-      <div className="relative flex-1 flex flex-col justify-center px-8 py-12">
+      <div className="relative flex-1 flex flex-col justify-center px-8 py-6">
         {/* Logo */}
-        <div className="flex flex-col items-center mb-12 animate-fade-in">
+        <div className="flex flex-col items-center mb-6 animate-fade-in">
           <img 
             src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/a6j6n0os_Your%20paragraph%20text%20%281%29.png"
             alt="Linea Reformer Pilates"
-            className="w-80 h-80 object-contain mb-4"
+            className="w-80 h-80 object-contain"
             data-testid="login-logo"
           />
-          <h1 className="font-heading text-3xl text-foreground">Dobrodošli</h1>
-          <p className="text-muted-foreground mt-2 text-center">
+          <h1 className="font-heading text-3xl text-foreground -mt-4">Dobrodošli</h1>
+          <p className="text-muted-foreground mt-1 text-center">
             Prijavite se na svoj nalog
           </p>
         </div>
 
         {/* Login Form */}
-        <form onSubmit={handlePhoneSubmit} className="space-y-4 animate-slide-up delay-200">
+        <form onSubmit={handlePhoneSubmit} className="space-y-3 animate-slide-up delay-200">
           <div>
             <Input
               type="tel"
               placeholder="Broj telefona"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              className="input-linea w-full h-14 text-lg"
+              className="input-linea w-full h-12 text-base"
               data-testid="phone-input"
             />
           </div>
@@ -125,7 +125,7 @@ const LoginPage = () => {
           <Button
             type="submit"
             disabled={loading}
-            className="btn-primary w-full h-14 text-lg"
+            className="btn-primary w-full h-12 text-base"
             data-testid="continue-btn"
           >
             {loading ? 'Učitavanje...' : 'Nastavi'}
@@ -133,7 +133,7 @@ const LoginPage = () => {
         </form>
 
         {/* Divider */}
-        <div className="flex items-center my-6 animate-slide-up delay-300">
+        <div className="flex items-center my-4 animate-slide-up delay-300">
           <div className="flex-1 h-px bg-border" />
           <span className="px-4 text-sm text-muted-foreground">ili</span>
           <div className="flex-1 h-px bg-border" />
@@ -144,7 +144,7 @@ const LoginPage = () => {
           type="button"
           onClick={handleGoogleLogin}
           variant="outline"
-          className="w-full h-14 text-lg border-2 border-primary text-primary hover:bg-primary/5 rounded-full animate-slide-up delay-400"
+          className="w-full h-12 text-base border-2 border-primary text-primary hover:bg-primary/5 rounded-full animate-slide-up delay-400"
           data-testid="google-login-btn"
         >
           <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24">
@@ -169,7 +169,7 @@ const LoginPage = () => {
         </Button>
 
         {/* Terms */}
-        <p className="text-center text-sm text-muted-foreground mt-8 animate-slide-up delay-500">
+        <p className="text-center text-xs text-muted-foreground mt-4 animate-slide-up delay-500">
           Registracijom prihvatate naše{' '}
           <Link 
             to="/uslovi-koristenja" 
