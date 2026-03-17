@@ -90,8 +90,8 @@ const LoginPage = () => {
 
   return (
     <div className="mobile-container min-h-screen flex flex-col bg-background" data-testid="login-page">
-      {/* Logo Section - Black background */}
-      <div className="bg-black flex items-center justify-center py-6 animate-fade-in">
+      {/* Logo Section */}
+      <div className="flex items-center justify-center pt-8 pb-4 animate-fade-in">
         <img 
           src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/jp1fkri2_Untitled%20design%20%285%29.png"
           alt="Linea Reformer Pilates"
