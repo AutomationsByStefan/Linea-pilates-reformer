@@ -62,13 +62,11 @@ const AuthCallback = () => {
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center p-8">
       <div className="animate-pulse flex flex-col items-center">
-        <div className="w-32 h-32 bg-black rounded-2xl flex items-center justify-center mb-4">
-          <img 
-            src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/ny62z2sx_linea.png"
-            alt="Linea Reformer Pilates"
-            className="w-28 h-28 object-contain"
-          />
-        </div>
+        <img 
+          src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/a6j6n0os_Your%20paragraph%20text%20%281%29.png"
+          alt="Linea Reformer Pilates"
+          className="w-32 h-32 object-contain mb-4"
+        />
         <p className="text-muted-foreground font-body">Prijava u toku...</p>
       </div>
     </div>

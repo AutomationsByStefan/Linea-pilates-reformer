@@ -71,13 +71,11 @@ const ProtectedRoute = ({ children }) => {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="animate-pulse">
-          <div className="w-28 h-28 bg-black rounded-2xl flex items-center justify-center">
-            <img 
-              src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/ny62z2sx_linea.png"
-              alt="Linea"
-              className="w-24 h-24 object-contain"
-            />
-          </div>
+          <img 
+            src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/a6j6n0os_Your%20paragraph%20text%20%281%29.png"
+            alt="Linea"
+            className="w-28 h-28 object-contain"
+          />
         </div>
       </div>
     );
