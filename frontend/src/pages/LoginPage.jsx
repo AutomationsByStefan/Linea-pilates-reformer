@@ -101,7 +101,7 @@ const LoginPage = () => {
       </div>
       
       {/* Content Section */}
-      <div className="flex-1 flex flex-col px-8 pt-0 pb-6 bg-background">
+      <div className="flex-1 flex flex-col px-8 pt-0 pb-6">
         {/* Welcome text */}
         <div className="text-center mb-5 animate-slide-up">
           <h1 className="font-heading text-3xl text-foreground">Dobrodošli</h1>
