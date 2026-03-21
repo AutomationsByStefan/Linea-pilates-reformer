@@ -78,7 +78,7 @@ await page.context.add_cookies([{
     "secure": True,
     "sameSite": "None"
 }])
-await page.goto("https://pilates-hub-12.preview.emergentagent.com")
+await page.goto("https://pilates-studio-19.preview.emergentagent.com")
 ```
 
 ## Quick Debug
