@@ -95,7 +95,7 @@ const LoginPage = () => {
         <img 
           src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/jp1fkri2_Untitled%20design%20%285%29.png"
           alt="Linea Reformer Pilates"
-          className="w-64 h-64 object-contain"
+          className="w-64 h-64 object-contain mix-blend-multiply"
           data-testid="login-logo"
         />
       </div>
