@@ -19,6 +19,14 @@ import WeightTrackingPage from "@/pages/WeightTrackingPage";
 import NotificationsPage from "@/pages/NotificationsPage";
 import InvitePage from "@/pages/InvitePage";
 
+// Admin Pages
+import AdminLoginPage from "@/pages/admin/AdminLoginPage";
+import AdminLayout from "@/pages/admin/AdminLayout";
+import AdminDashboardPage from "@/pages/admin/AdminDashboardPage";
+import AdminSchedulePage from "@/pages/admin/AdminSchedulePage";
+import AdminBookingsPage from "@/pages/admin/AdminBookingsPage";
+import AdminUsersPage from "@/pages/admin/AdminUsersPage";
+
 // Components
 import Layout from "@/components/Layout";
 import AuthCallback from "@/components/AuthCallback";
@@ -188,6 +196,13 @@ function AppRouter() {
           )}
         </ProtectedRoute>
       } />
+
+      {/* Admin routes */}
+      <Route path="/admin/login" element={<AdminLoginPage />} />
+      <Route path="/admin" element={<AdminLayout><AdminDashboardPage /></AdminLayout>} />
+      <Route path="/admin/raspored" element={<AdminLayout><AdminSchedulePage /></AdminLayout>} />
+      <Route path="/admin/rezervacije" element={<AdminLayout><AdminBookingsPage /></AdminLayout>} />
+      <Route path="/admin/korisnici" element={<AdminLayout><AdminUsersPage /></AdminLayout>} />
 
       {/* Fallback to login */}
       <Route path="*" element={<LoginPage />} />

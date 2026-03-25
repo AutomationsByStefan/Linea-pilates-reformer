@@ -10,6 +10,9 @@ from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta
 import httpx
+from passlib.hash import bcrypt
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import asyncio
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -101,6 +104,20 @@ class ShareInviteRequest(BaseModel):
     recipient_user_id: Optional[str] = None  # For in-app sharing
     generate_link: bool = False  # For external sharing
 
+class AdminLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class AdminSlotRequest(BaseModel):
+    datum: str  # YYYY-MM-DD
+    vrijeme: str  # HH:MM
+    instruktor: str
+    ukupno_mjesta: int = 3
+    trajanje: int = 50
+
+class AdminCancelRequest(BaseModel):
+    razlog: Optional[str] = None
+
 # ============== HELPER FUNCTIONS ==============
 
 async def get_current_user(request: Request) -> User:
@@ -140,6 +157,34 @@ async def get_current_user(request: Request) -> User:
         raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
     
     return User(**user_doc)
+
+async def get_admin_user(request: Request) -> dict:
+    """Get current admin from session token"""
+    session_token = request.cookies.get("admin_session_token")
+    if not session_token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            session_token = auth_header[7:]
+    if not session_token:
+        raise HTTPException(status_code=401, detail="Admin prijava je potrebna")
+    session_doc = await db.admin_sessions.find_one(
+        {"session_token": session_token}, {"_id": 0}
+    )
+    if not session_doc:
+        raise HTTPException(status_code=401, detail="Nevalidna admin sesija")
+    expires_at = session_doc.get("expires_at", "")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Admin sesija je istekla")
+    admin = await db.admins.find_one(
+        {"admin_id": session_doc["admin_id"]}, {"_id": 0}
+    )
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin nije pronađen")
+    return admin
 
 def format_bosnian_date(dt):
     """Format date in Bosnian"""
@@ -916,34 +961,32 @@ async def mark_all_notifications_read(request: Request):
     
     return {"success": True}
 
-# ============== SCHEDULE (MOCK DATA) ==============
+# ============== SCHEDULE (FROM DATABASE) ==============
 
 @api_router.get("/schedule")
 async def get_schedule():
-    """Get available training slots (mock data)"""
+    """Get available training slots from database"""
     now = datetime.now(timezone.utc)
-    schedule = []
+    today_str = now.strftime("%Y-%m-%d")
     
-    instructors = ["Ana Marić", "Maja Kovač", "Ivana Petrović"]
-    # 4 morning slots (09:00-12:00) and 4 afternoon slots (16:00-19:00)
-    times = ["09:00", "10:00", "11:00", "12:00", "16:00", "17:00", "18:00", "19:00"]
+    slots = await db.schedule_slots.find(
+        {"datum": {"$gte": today_str}},
+        {"_id": 0}
+    ).sort([("datum", 1), ("vrijeme", 1)]).to_list(5000)
     
-    for day_offset in range(30):  # Extended to 30 days for full month view
-        date = now + timedelta(days=day_offset)
-        for idx, time in enumerate(times):
-            # Vary available spots (0-3 for realistic availability)
-            available = (day_offset + idx) % 4  # 0, 1, 2, or 3
-            schedule.append({
-                "id": f"slot_{date.strftime('%Y%m%d')}_{time.replace(':', '')}",
-                "datum": date.strftime("%Y-%m-%d"),
-                "vrijeme": time,
-                "instruktor": instructors[(day_offset + idx) % 3],
-                "slobodna_mjesta": available,
-                "ukupno_mjesta": 3,
-                "trajanje": 50
-            })
+    # Enrich with actual availability
+    result = []
+    for slot in slots:
+        booked = await db.trainings.count_documents({
+            "slot_id": slot["id"], "tip": {"$in": ["predstojeći", "završen"]}
+        })
+        result.append({
+            **slot,
+            "slobodna_mjesta": max(0, slot["ukupno_mjesta"] - booked),
+            "ukupno_mjesta": slot["ukupno_mjesta"]
+        })
     
-    return schedule
+    return result
 
 # ============== PACKAGES (MOCK DATA) ==============
 
@@ -1136,6 +1179,281 @@ async def search_users(q: str, request: Request):
 async def root():
     return {"message": "Linea Reformer Pilates API"}
 
+# ============== ADMIN AUTH ==============
+
+@api_router.post("/admin/login")
+async def admin_login(data: AdminLoginRequest, response: Response):
+    """Admin login"""
+    admin = await db.admins.find_one({"email": data.email}, {"_id": 0})
+    if not admin:
+        raise HTTPException(status_code=401, detail="Pogrešan email ili lozinka")
+    if not bcrypt.verify(data.password, admin["password_hash"]):
+        raise HTTPException(status_code=401, detail="Pogrešan email ili lozinka")
+    session_token = str(uuid.uuid4())
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.admin_sessions.delete_many({"admin_id": admin["admin_id"]})
+    await db.admin_sessions.insert_one({
+        "session_id": str(uuid.uuid4()),
+        "admin_id": admin["admin_id"],
+        "session_token": session_token,
+        "expires_at": expires_at.isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    response.set_cookie(
+        key="admin_session_token", value=session_token,
+        httponly=True, secure=True, samesite="none",
+        max_age=7 * 24 * 60 * 60, path="/"
+    )
+    return {
+        "admin_id": admin["admin_id"],
+        "name": admin["name"],
+        "email": admin["email"],
+        "session_token": session_token
+    }
+
+@api_router.get("/admin/me")
+async def admin_me(request: Request):
+    """Get current admin"""
+    admin = await get_admin_user(request)
+    return {"admin_id": admin["admin_id"], "name": admin["name"], "email": admin["email"]}
+
+@api_router.post("/admin/logout")
+async def admin_logout(request: Request, response: Response):
+    """Admin logout"""
+    session_token = request.cookies.get("admin_session_token")
+    if session_token:
+        await db.admin_sessions.delete_many({"session_token": session_token})
+    response.delete_cookie(key="admin_session_token", path="/")
+    return {"message": "Uspješno ste se odjavili"}
+
+# ============== ADMIN DASHBOARD ==============
+
+@api_router.get("/admin/dashboard")
+async def admin_dashboard(request: Request):
+    """Admin dashboard stats"""
+    await get_admin_user(request)
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
+    total_users = await db.users.count_documents({})
+    active_memberships = await db.memberships.count_documents({"tip": "aktivna"})
+    today_trainings = await db.trainings.count_documents({
+        "datum": {"$regex": f"^{today_str}"}, "tip": "predstojeći"
+    })
+    total_bookings = await db.trainings.count_documents({})
+    recent_users = await db.users.find(
+        {}, {"_id": 0, "user_id": 1, "name": 1, "email": 1, "phone": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(5)
+    return {
+        "ukupno_korisnika": total_users,
+        "aktivne_clanarine": active_memberships,
+        "danasnji_treninzi": today_trainings,
+        "ukupno_rezervacija": total_bookings,
+        "posljednji_korisnici": recent_users
+    }
+
+# ============== ADMIN USERS ==============
+
+@api_router.get("/admin/users")
+async def admin_get_users(request: Request):
+    """Get all users"""
+    await get_admin_user(request)
+    users = await db.users.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    result = []
+    for u in users:
+        membership = await db.memberships.find_one(
+            {"user_id": u["user_id"], "tip": "aktivna"}, {"_id": 0}
+        )
+        upcoming = await db.trainings.count_documents(
+            {"user_id": u["user_id"], "tip": "predstojeći"}
+        )
+        result.append({
+            **u,
+            "aktivna_clanarina": membership is not None,
+            "preostali_termini": membership.get("preostali_termini", 0) if membership else 0,
+            "predstojeći_treninzi": upcoming
+        })
+    return result
+
+# ============== ADMIN SCHEDULE MANAGEMENT ==============
+
+@api_router.get("/admin/schedule")
+async def admin_get_schedule(request: Request):
+    """Get all schedule slots from DB"""
+    await get_admin_user(request)
+    slots = await db.schedule_slots.find(
+        {}, {"_id": 0}
+    ).sort([("datum", 1), ("vrijeme", 1)]).to_list(5000)
+    # Enrich with booking count
+    for slot in slots:
+        booked = await db.trainings.count_documents({
+            "slot_id": slot["id"], "tip": {"$in": ["predstojeći", "završen"]}
+        })
+        slot["zauzeto"] = booked
+        slot["slobodna_mjesta"] = max(0, slot["ukupno_mjesta"] - booked)
+    return slots
+
+@api_router.post("/admin/schedule/slots")
+async def admin_create_slot(data: AdminSlotRequest, request: Request):
+    """Create a new schedule slot"""
+    await get_admin_user(request)
+    slot_id = f"slot_{data.datum.replace('-', '')}_{data.vrijeme.replace(':', '')}"
+    existing = await db.schedule_slots.find_one({"id": slot_id})
+    if existing:
+        raise HTTPException(status_code=400, detail="Ovaj termin već postoji")
+    slot = {
+        "id": slot_id,
+        "datum": data.datum,
+        "vrijeme": data.vrijeme,
+        "instruktor": data.instruktor,
+        "ukupno_mjesta": data.ukupno_mjesta,
+        "trajanje": data.trajanje,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.schedule_slots.insert_one(slot)
+    return {"success": True, "slot": {k: v for k, v in slot.items() if k != "_id"}}
+
+@api_router.put("/admin/schedule/slots/{slot_id}")
+async def admin_update_slot(slot_id: str, data: AdminSlotRequest, request: Request):
+    """Update a schedule slot"""
+    await get_admin_user(request)
+    result = await db.schedule_slots.update_one(
+        {"id": slot_id},
+        {"$set": {
+            "datum": data.datum, "vrijeme": data.vrijeme,
+            "instruktor": data.instruktor, "ukupno_mjesta": data.ukupno_mjesta,
+            "trajanje": data.trajanje
+        }}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Termin nije pronađen")
+    return {"success": True, "message": "Termin je ažuriran"}
+
+@api_router.delete("/admin/schedule/slots/{slot_id}")
+async def admin_delete_slot(slot_id: str, request: Request):
+    """Delete a schedule slot"""
+    await get_admin_user(request)
+    booked = await db.trainings.count_documents({
+        "slot_id": slot_id, "tip": "predstojeći"
+    })
+    if booked > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ne možete obrisati termin sa {booked} aktivnih rezervacija. Prvo otkažite rezervacije."
+        )
+    result = await db.schedule_slots.delete_one({"id": slot_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Termin nije pronađen")
+    return {"success": True, "message": "Termin je obrisan"}
+
+# ============== ADMIN BOOKINGS ==============
+
+@api_router.get("/admin/bookings")
+async def admin_get_bookings(request: Request):
+    """Get all bookings"""
+    await get_admin_user(request)
+    trainings = await db.trainings.find(
+        {}, {"_id": 0}
+    ).sort("datum", -1).to_list(1000)
+    result = []
+    for t in trainings:
+        user = await db.users.find_one({"user_id": t["user_id"]}, {"_id": 0, "name": 1, "phone": 1, "email": 1})
+        result.append({**t, "korisnik": user})
+    return result
+
+@api_router.post("/admin/bookings/{training_id}/cancel")
+async def admin_cancel_booking(training_id: str, data: AdminCancelRequest, request: Request):
+    """Cancel a booking (admin only). Only possible 12+ hours before the training."""
+    await get_admin_user(request)
+    training = await db.trainings.find_one({"id": training_id}, {"_id": 0})
+    if not training:
+        raise HTTPException(status_code=404, detail="Rezervacija nije pronađena")
+    if training["tip"] not in ["predstojeći"]:
+        raise HTTPException(status_code=400, detail="Samo predstojeće rezervacije se mogu otkazati")
+    # Parse training datetime
+    training_datum = training.get("datum", "")
+    training_vrijeme = training.get("vrijeme", "00:00")
+    try:
+        if "T" in training_datum:
+            training_dt = datetime.fromisoformat(training_datum.replace("Z", "+00:00"))
+        else:
+            hour, minute = training_vrijeme.split(":")
+            training_dt = datetime.strptime(training_datum, "%Y-%m-%d").replace(
+                hour=int(hour), minute=int(minute), tzinfo=timezone.utc
+            )
+    except Exception:
+        raise HTTPException(status_code=400, detail="Neispravan format datuma treninga")
+    now = datetime.now(timezone.utc)
+    hours_until = (training_dt - now).total_seconds() / 3600
+    if hours_until < 12:
+        raise HTTPException(
+            status_code=400,
+            detail="Otkazivanje nije moguće manje od 12 sati prije termina. Termin se računa kao iskorišten."
+        )
+    # Cancel the training
+    await db.trainings.update_one(
+        {"id": training_id},
+        {"$set": {"tip": "otkazan", "razlog_otkazivanja": data.razlog or "Otkazano od strane admina"}}
+    )
+    # Restore membership slot
+    membership = await db.memberships.find_one(
+        {"user_id": training["user_id"], "tip": "aktivna"}, {"_id": 0}
+    )
+    if membership:
+        await db.memberships.update_one(
+            {"id": membership["id"]},
+            {"$inc": {"preostali_termini": 1}}
+        )
+    # Notify the user
+    notification = {
+        "id": str(uuid.uuid4()),
+        "user_id": training["user_id"],
+        "type": "booking_cancelled",
+        "title": "Termin otkazan",
+        "message": f"Vaš termin za {training_datum} u {training_vrijeme} je otkazan.\n{data.razlog or ''}".strip(),
+        "data": {"training_id": training_id},
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.notifications.insert_one(notification)
+    return {"success": True, "message": "Rezervacija je uspješno otkazana. Termin je vraćen korisniku."}
+
+# ============== ADMIN BULK SCHEDULE ==============
+
+@api_router.post("/admin/schedule/generate-week")
+async def admin_generate_week(request: Request):
+    """Generate schedule slots for the next 7 days"""
+    await get_admin_user(request)
+    body = await request.json()
+    start_date_str = body.get("start_date")
+    days_count = body.get("days", 7)
+    instructors = body.get("instructors", ["Ana Marić", "Maja Kovač", "Ivana Petrović"])
+    times = body.get("times", ["09:00", "10:00", "11:00", "12:00", "16:00", "17:00", "18:00", "19:00"])
+    spots = body.get("spots_per_slot", 3)
+    if start_date_str:
+        start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+    else:
+        start_date = datetime.now(timezone.utc)
+    created = 0
+    for day_offset in range(days_count):
+        date = start_date + timedelta(days=day_offset)
+        date_str = date.strftime("%Y-%m-%d")
+        for idx, time in enumerate(times):
+            slot_id = f"slot_{date_str.replace('-', '')}_{time.replace(':', '')}"
+            existing = await db.schedule_slots.find_one({"id": slot_id})
+            if not existing:
+                slot = {
+                    "id": slot_id,
+                    "datum": date_str,
+                    "vrijeme": time,
+                    "instruktor": instructors[idx % len(instructors)],
+                    "ukupno_mjesta": spots,
+                    "trajanje": 50,
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                }
+                await db.schedule_slots.insert_one(slot)
+                created += 1
+    return {"success": True, "message": f"Kreirano {created} novih termina", "created": created}
+
 # Include the router in the main app
 app.include_router(api_router)
 
@@ -1154,6 +1472,130 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============== NOTIFICATION SCHEDULER ==============
+
+scheduler = AsyncIOScheduler()
+
+async def check_day_before_reminders():
+    """Send reminders for trainings happening tomorrow"""
+    try:
+        now = datetime.now(timezone.utc)
+        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        trainings = await db.trainings.find(
+            {"tip": "predstojeći", "datum": {"$regex": f"^{tomorrow}"}},
+            {"_id": 0}
+        ).to_list(1000)
+        for training in trainings:
+            existing = await db.notifications.find_one({
+                "user_id": training["user_id"],
+                "type": "day_before_reminder",
+                "data.training_id": training["id"]
+            })
+            if not existing:
+                await db.notifications.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "user_id": training["user_id"],
+                    "type": "day_before_reminder",
+                    "title": "Sutrašnji trening",
+                    "message": f"Sutra te očekuje tvoj Pilates Reformer trening\nVidimo se u {training['vrijeme']}. Radujemo se zajedničkom treningu.",
+                    "data": {"training_id": training["id"]},
+                    "read": False,
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                })
+        logger.info(f"Day-before check: {len(trainings)} trainings for {tomorrow}")
+    except Exception as e:
+        logger.error(f"Day-before reminder error: {e}")
+
+async def check_inactivity_reminders():
+    """Send reminders for users inactive 7+ days"""
+    try:
+        now = datetime.now(timezone.utc)
+        seven_days_ago = (now - timedelta(days=7)).isoformat()
+        users = await db.users.find(
+            {"last_activity": {"$lt": seven_days_ago}},
+            {"_id": 0}
+        ).to_list(1000)
+        for user_doc in users:
+            uid = user_doc["user_id"]
+            upcoming = await db.trainings.count_documents({"user_id": uid, "tip": "predstojeći"})
+            if upcoming > 0:
+                continue
+            existing = await db.notifications.find_one({
+                "user_id": uid,
+                "type": "inactivity_reminder",
+                "created_at": {"$gte": seven_days_ago}
+            })
+            if not existing:
+                await db.notifications.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "user_id": uid,
+                    "type": "inactivity_reminder",
+                    "title": "Nedostaješ nam",
+                    "message": "Nedostaješ nam u studiju\nVrijeme je da rezervišeš novi Pilates Reformer trening.",
+                    "data": {},
+                    "read": False,
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                })
+        logger.info(f"Inactivity check: {len(users)} inactive users checked")
+    except Exception as e:
+        logger.error(f"Inactivity reminder error: {e}")
+
+# ============== SEED DATA ==============
+
+async def seed_admin():
+    """Create default admin if none exists"""
+    existing = await db.admins.find_one({"email": "admin@linea.ba"})
+    if not existing:
+        admin = {
+            "admin_id": f"admin_{uuid.uuid4().hex[:8]}",
+            "email": "admin@linea.ba",
+            "name": "Admin",
+            "password_hash": bcrypt.hash("admin123"),
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.admins.insert_one(admin)
+        logger.info("Default admin created: admin@linea.ba / admin123")
+
+async def seed_schedule():
+    """Seed schedule slots for 30 days if empty"""
+    count = await db.schedule_slots.count_documents({})
+    if count > 0:
+        return
+    now = datetime.now(timezone.utc)
+    instructors = ["Ana Marić", "Maja Kovač", "Ivana Petrović"]
+    times = ["09:00", "10:00", "11:00", "12:00", "16:00", "17:00", "18:00", "19:00"]
+    slots = []
+    for day_offset in range(30):
+        date = now + timedelta(days=day_offset)
+        date_str = date.strftime("%Y-%m-%d")
+        for idx, time_str in enumerate(times):
+            slot_id = f"slot_{date_str.replace('-', '')}_{time_str.replace(':', '')}"
+            slots.append({
+                "id": slot_id,
+                "datum": date_str,
+                "vrijeme": time_str,
+                "instruktor": instructors[(day_offset + idx) % 3],
+                "ukupno_mjesta": 3,
+                "trajanje": 50,
+                "created_at": now.isoformat()
+            })
+    if slots:
+        await db.schedule_slots.insert_many(slots)
+        logger.info(f"Seeded {len(slots)} schedule slots")
+
+# ============== STARTUP / SHUTDOWN ==============
+
+@app.on_event("startup")
+async def startup():
+    await seed_admin()
+    await seed_schedule()
+    # Start notification scheduler - runs every hour
+    scheduler.add_job(check_day_before_reminders, 'interval', hours=1, id='day_before')
+    scheduler.add_job(check_inactivity_reminders, 'interval', hours=6, id='inactivity')
+    scheduler.start()
+    logger.info("Notification scheduler started")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    scheduler.shutdown(wait=False)
     client.close()
