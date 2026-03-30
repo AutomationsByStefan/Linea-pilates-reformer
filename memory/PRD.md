@@ -40,7 +40,7 @@ Build a mobile-first web application for a Pilates Reformer Studio called "Linea
 
 ## What's Been Implemented
 
-### March 2026 - Admin Panel & Notifications
+### March 2026 - Admin Panel, Notifications & Booking Improvements
 
 **New Features Added:**
 
@@ -77,6 +77,31 @@ Build a mobile-first web application for a Pilates Reformer Studio called "Linea
 
 5. **Logo Background Fix** - DONE
    - Applied mix-blend-multiply + explicit bg-[#FDFCF8] on login page
+
+6. **Updated Studio Info** - DONE
+   - Instagram: https://www.instagram.com/lineapilatesreformer/ (@lineapilatesreformer)
+   - Address: Kralja Petra I Oslobodioca 55, 89101 Trebinje
+   - Google Maps iframe embed showing real location
+
+7. **Same-Day Scheduling** - DONE
+   - Today is selectable in the calendar
+   - Only future time slots for today are shown (past times filtered)
+
+8. **One Booking Per Day Limit** - DONE
+   - User can only book one training per day
+   - Backend enforces the limit
+   - Clear error messages in Bosnian
+
+9. **Booking Confirmation Dialog** - DONE
+   - Popup shows day/time details before booking
+   - "Da li potvrdjujete dolazak?" with Da/Ne buttons
+   - Booking only saved when user clicks "Da"
+
+10. **Reschedule Within 30 Minutes** - DONE
+    - Users can change their booking within 30 min of creation
+    - "Promijeni" button visible during the 30 min window
+    - Reschedule dialog with current booking details
+    - Backend validates 30 min window from created_at timestamp
 
 ### February 2026 - Feature Extension
 
@@ -145,10 +170,10 @@ Build a mobile-first web application for a Pilates Reformer Studio called "Linea
 - **Password**: admin123
 - **URL**: /admin/login
 
-## Contact Information (Placeholder)
+## Contact Information
 - **Phone**: +387 59 123 456
-- **Instagram**: @linea.pilates.trebinje
-- **Address**: Trg Slobode 15, 89101 Trebinje
+- **Instagram**: @lineapilatesreformer (https://www.instagram.com/lineapilatesreformer/)
+- **Address**: Kralja Petra I Oslobodioca 55, 89101 Trebinje
 
 ---
 
