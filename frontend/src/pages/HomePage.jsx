@@ -354,16 +354,15 @@ const HomePage = ({ user }) => {
                   <p className="font-medium text-foreground">{studioInfo.adresa}</p>
                 </div>
               </div>
-              {/* Static Map Image */}
+              {/* Google Maps Embed */}
               <div className="rounded-2xl overflow-hidden h-40 bg-muted relative">
-                <img
-                  src={`https://maps.googleapis.com/maps/api/staticmap?center=${studioInfo.latitude},${studioInfo.longitude}&zoom=15&size=400x200&markers=color:0xB8860B%7C${studioInfo.latitude},${studioInfo.longitude}&style=feature:all%7Celement:labels.text.fill%7Ccolor:0x746855&style=feature:all%7Celement:labels.text.stroke%7Ccolor:0xf5f1e6&style=feature:water%7Celement:geometry.fill%7Ccolor:0xc8d7d4&key=`}
-                  alt="Lokacija studija"
-                  className="w-full h-full object-cover"
-                  onError={(e) => {
-                    e.target.onerror = null;
-                    e.target.src = 'https://images.unsplash.com/photo-1524661135-423995f22d0b?w=400&h=200&fit=crop';
-                  }}
+                <iframe
+                  title="Lokacija studija"
+                  src={`https://maps.google.com/maps?q=${encodeURIComponent(studioInfo.adresa)}&t=&z=16&ie=UTF8&iwloc=&output=embed`}
+                  className="w-full h-full border-0"
+                  allowFullScreen
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
                 />
               </div>
             </div>

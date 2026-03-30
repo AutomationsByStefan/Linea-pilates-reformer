@@ -550,9 +550,6 @@ async def create_booking(data: BookingRequest, request: Request):
     """Book a training slot"""
     user = await get_current_user(request)
     
-    # Check available spots (mock - always allow for now)
-    # In real implementation, check against actual slot capacity
-    
     # Check if user has active membership with remaining slots
     membership = await db.memberships.find_one(
         {"user_id": user.user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}},
@@ -561,6 +558,24 @@ async def create_booking(data: BookingRequest, request: Request):
     
     if not membership:
         raise HTTPException(status_code=400, detail="Nemate aktivnu članarinu ili preostalih termina")
+    
+    # Check one booking per day limit
+    existing_today = await db.trainings.find_one({
+        "user_id": user.user_id,
+        "datum": {"$regex": f"^{data.datum}"},
+        "tip": "predstojeći"
+    })
+    if existing_today:
+        raise HTTPException(status_code=400, detail="Već imate zakazan termin za ovaj dan. Možete imati samo jedan termin dnevno.")
+    
+    # Check actual slot availability
+    slot = await db.schedule_slots.find_one({"id": data.slot_id}, {"_id": 0})
+    if slot:
+        booked_count = await db.trainings.count_documents({
+            "slot_id": data.slot_id, "tip": {"$in": ["predstojeći", "završen"]}
+        })
+        if booked_count >= slot.get("ukupno_mjesta", 3):
+            raise HTTPException(status_code=400, detail="Ovaj termin je popunjen")
     
     # Create training record
     training_id = str(uuid.uuid4())
@@ -596,7 +611,61 @@ async def create_booking(data: BookingRequest, request: Request):
         "message": "Termin je uspješno rezervisan!"
     }
 
-# ============== SHARE TRAINING ==============
+class RescheduleRequest(BaseModel):
+    new_slot_id: str
+    new_datum: str
+    new_vrijeme: str
+    new_instruktor: str
+
+@api_router.post("/bookings/{training_id}/reschedule")
+async def reschedule_booking(training_id: str, data: RescheduleRequest, request: Request):
+    """Reschedule a booking within 30 minutes of creation"""
+    user = await get_current_user(request)
+    training = await db.trainings.find_one(
+        {"id": training_id, "user_id": user.user_id, "tip": "predstojeći"},
+        {"_id": 0}
+    )
+    if not training:
+        raise HTTPException(status_code=404, detail="Rezervacija nije pronađena")
+    # Check 30 minute window
+    created_at = training.get("created_at", "")
+    if isinstance(created_at, str):
+        created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    minutes_since = (datetime.now(timezone.utc) - created_at).total_seconds() / 60
+    if minutes_since > 30:
+        raise HTTPException(status_code=400, detail="Preraspodjela je moguća samo u prvih 30 minuta od rezervacije.")
+    # Check one booking per day for new date (exclude current booking)
+    existing_on_new_date = await db.trainings.find_one({
+        "user_id": user.user_id,
+        "datum": {"$regex": f"^{data.new_datum}"},
+        "tip": "predstojeći",
+        "id": {"$ne": training_id}
+    })
+    if existing_on_new_date:
+        raise HTTPException(status_code=400, detail="Već imate zakazan termin za taj dan.")
+    # Check new slot availability
+    new_slot = await db.schedule_slots.find_one({"id": data.new_slot_id}, {"_id": 0})
+    if new_slot:
+        booked_count = await db.trainings.count_documents({
+            "slot_id": data.new_slot_id,
+            "tip": {"$in": ["predstojeći", "završen"]},
+            "id": {"$ne": training_id}
+        })
+        if booked_count >= new_slot.get("ukupno_mjesta", 3):
+            raise HTTPException(status_code=400, detail="Novi termin je popunjen")
+    # Update the training
+    await db.trainings.update_one(
+        {"id": training_id},
+        {"$set": {
+            "slot_id": data.new_slot_id,
+            "datum": data.new_datum,
+            "vrijeme": data.new_vrijeme,
+            "instruktor": data.new_instruktor
+        }}
+    )
+    return {"success": True, "message": "Termin je uspješno promijenjen!"}
 
 @api_router.post("/trainings/share")
 async def share_training(data: ShareInviteRequest, request: Request):
@@ -1042,13 +1111,13 @@ async def get_studio_info():
     return {
         "naziv": "Linea Reformer Pilates",
         "telefon": "+387 59 123 456",
-        "instagram": "https://instagram.com/linea.pilates.trebinje",
-        "instagram_handle": "@linea.pilates.trebinje",
-        "adresa": "Trg Slobode 15, 89101 Trebinje",
+        "instagram": "https://www.instagram.com/lineapilatesreformer/",
+        "instagram_handle": "@lineapilatesreformer",
+        "adresa": "Kralja Petra I Oslobodioca 55, 89101 Trebinje",
         "grad": "Trebinje",
         "drzava": "Bosna i Hercegovina",
-        "latitude": 42.7117,
-        "longitude": 18.3438,
+        "latitude": 42.71239,
+        "longitude": 18.34223,
         "radno_vrijeme": {
             "pon_pet": "08:00 - 21:00",
             "sub": "09:00 - 14:00",
