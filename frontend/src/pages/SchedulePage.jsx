@@ -12,6 +12,14 @@ import {
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+// Timezone-safe date formatting (avoids UTC shift from toISOString)
+const toDateStr = (date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
 const SchedulePage = () => {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(null);
@@ -82,7 +90,7 @@ const SchedulePage = () => {
 
   const hasSlots = (date) => {
     if (!date) return false;
-    const dateStr = date.toISOString().split('T')[0];
+    const dateStr = toDateStr(date);
     return schedule.some(s => s.datum === dateStr);
   };
 
@@ -94,7 +102,7 @@ const SchedulePage = () => {
   // Get slots for selected date, filter past times if today
   const getSelectedDateSlots = () => {
     if (!selectedDate) return [];
-    const dateStr = selectedDate.toISOString().split('T')[0];
+    const dateStr = toDateStr(selectedDate);
     let slots = schedule.filter(s => s.datum === dateStr);
     // If today, filter out past time slots
     if (isToday(selectedDate)) {
@@ -123,7 +131,7 @@ const SchedulePage = () => {
     });
   };
 
-  const selectedDateStr = selectedDate ? selectedDate.toISOString().split('T')[0] : '';
+  const selectedDateStr = selectedDate ? toDateStr(selectedDate) : '';
   const existingBookingForDay = getBookingForDate(selectedDateStr);
 
   // Check if booking is within 30 min for reschedule

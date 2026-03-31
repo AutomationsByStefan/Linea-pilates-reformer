@@ -342,7 +342,13 @@ const HomePage = ({ user }) => {
             </a>
 
             {/* Adresa */}
-            <div className="card-linea" data-testid="contact-address-card">
+            <a
+              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(studioInfo.adresa)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="card-linea card-linea-interactive block"
+              data-testid="contact-address-card"
+            >
               <div className="flex items-center gap-4 mb-4">
                 <div className="w-12 h-12 rounded-2xl bg-secondary flex items-center justify-center flex-shrink-0">
                   <MapPin className="w-5 h-5 text-primary" />
@@ -355,7 +361,7 @@ const HomePage = ({ user }) => {
                 </div>
               </div>
               {/* Google Maps Embed */}
-              <div className="rounded-2xl overflow-hidden h-40 bg-muted relative">
+              <div className="rounded-2xl overflow-hidden h-40 bg-muted relative pointer-events-none">
                 <iframe
                   title="Lokacija studija"
                   src={`https://maps.google.com/maps?q=${encodeURIComponent(studioInfo.adresa)}&t=&z=16&ie=UTF8&iwloc=&output=embed`}
@@ -365,7 +371,7 @@ const HomePage = ({ user }) => {
                   referrerPolicy="no-referrer-when-downgrade"
                 />
               </div>
-            </div>
+            </a>
           </div>
         )}
       </section>

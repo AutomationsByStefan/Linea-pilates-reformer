@@ -1064,40 +1064,49 @@ async def get_packages():
     """Get available membership packages"""
     packages = [
         {
-            "id": "pkg_1",
-            "naziv": "Pojedinačni termin",
-            "opis": "Jedan trening na Reformer-u",
-            "cijena": 25,
-            "valuta": "KM",
-            "termini": 1,
-            "trajanje_dana": 30
-        },
-        {
-            "id": "pkg_4",
-            "naziv": "Paket 4 termina",
-            "opis": "Idealno za početak",
+            "id": "pkg_basic",
+            "naziv": "Basic",
+            "opis": "Mala grupa do 3 osobe",
             "cijena": 90,
             "valuta": "KM",
-            "termini": 4,
+            "termini": 6,
             "trajanje_dana": 30
         },
         {
-            "id": "pkg_8",
-            "naziv": "Paket 8 termina",
-            "opis": "Najpopularniji izbor",
-            "cijena": 160,
+            "id": "pkg_active",
+            "naziv": "Linea Active",
+            "opis": "Mala grupa do 3 osobe",
+            "cijena": 125,
             "valuta": "KM",
             "termini": 8,
+            "trajanje_dana": 30
+        },
+        {
+            "id": "pkg_balance",
+            "naziv": "Linea Balance",
+            "opis": "Mala grupa do 3 osobe",
+            "cijena": 145,
+            "valuta": "KM",
+            "termini": 10,
             "trajanje_dana": 30,
             "popular": True
         },
         {
-            "id": "pkg_12",
-            "naziv": "Paket 12 termina",
-            "opis": "Najbolja vrijednost",
-            "cijena": 220,
+            "id": "pkg_gold",
+            "naziv": "Linea Gold",
+            "opis": "Mala grupa do 3 osobe",
+            "cijena": 175,
             "valuta": "KM",
             "termini": 12,
+            "trajanje_dana": 30
+        },
+        {
+            "id": "pkg_premium",
+            "naziv": "Linea Premium",
+            "opis": "Mala grupa do 3 osobe",
+            "cijena": 200,
+            "valuta": "KM",
+            "termini": 16,
             "trajanje_dana": 30
         }
     ]

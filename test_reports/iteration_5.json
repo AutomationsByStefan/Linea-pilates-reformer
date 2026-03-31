@@ -1,0 +1,96 @@
+{
+  "summary": "Iteration 5 bug fix testing completed. All 3 reported bugs have been fixed and verified: 1) Today's date (March 31) is now selectable for booking - timezone fix with toDateStr() working correctly, 2) Packages updated to 5 new packages with correct names/prices, 3) Instagram and Google Maps links now open in new tabs.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "passed_tests": [
+    "GET /api/packages returns exactly 5 packages - PASSED",
+    "Basic package: 6 termina, 90 KM - PASSED",
+    "Linea Active package: 8 termina, 125 KM - PASSED",
+    "Linea Balance package: 10 termina, 145 KM (popular=true) - PASSED",
+    "Linea Gold package: 12 termina, 175 KM - PASSED",
+    "Linea Premium package: 16 termina, 200 KM - PASSED",
+    "GET /api/studio-info returns Instagram URL https://www.instagram.com/lineapilatesreformer/ - PASSED",
+    "GET /api/studio-info returns Instagram handle @lineapilatesreformer - PASSED",
+    "GET /api/studio-info returns address for Google Maps - PASSED",
+    "GET /api/schedule returns today's date (2026-03-31) slots - PASSED (8 slots found)",
+    "Today's slots have all required fields (id, datum, vrijeme, instruktor, ukupno_mjesta, slobodna_mjesta) - PASSED",
+    "Today's slots have valid time values - PASSED",
+    "Schedule dates are in YYYY-MM-DD format - PASSED",
+    "UI: Schedule page shows today (31) as selectable (not grayed out) - PASSED",
+    "UI: Clicking today shows 7 future time slots (09:00 filtered out as past) - PASSED",
+    "UI: Instagram card has href=https://www.instagram.com/lineapilatesreformer/ and target=_blank - PASSED",
+    "UI: Address card is <a> tag with target=_blank and href contains google.com/maps - PASSED",
+    "UI: Google Maps iframe is embedded in address card - PASSED",
+    "UI: Packages page shows all 5 packages with correct names, termini, and prices - PASSED",
+    "UI: Linea Balance marked as 'Najpopularniji' (most popular) - PASSED"
+  ],
+
+  "test_report_links": [
+    "/app/backend/tests/test_iteration5_bugs.py",
+    "/app/test_reports/pytest/pytest_results_iter5.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "toDateStr() function in SchedulePage.jsx correctly uses local timezone (getFullYear/getMonth/getDate) instead of toISOString() which was causing UTC shift",
+    "Address card in HomePage.jsx changed from <div> to <a> tag with target=_blank for Google Maps link",
+    "Instagram link already had target=_blank, working correctly",
+    "Packages endpoint returns 5 packages with correct values matching requirements"
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_iteration5_bugs.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (13/13 tests passed)",
+    "frontend": "100% (All UI features working correctly)"
+  },
+
+  "test_credentials": {
+    "phone_auth": "+387 61 123 456, OTP code is always 123456 (MOCKED)",
+    "admin": "admin@linea.ba / admin123"
+  },
+
+  "seed_data_creation": "Used existing seeded schedule slots (240 slots for 30 days)",
+
+  "retest_needed": false,
+
+  "should_main_agent_self_test": false,
+
+  "context_for_next_testing_agent": "All 3 bugs from Iteration 5 fixed and verified. Phone OTP is MOCKED (always 123456). Schedule data comes from MongoDB with 8 slots per day. The toDateStr() function in SchedulePage.jsx now uses local timezone to avoid UTC shift issues. Today's past time slots are correctly filtered out. All 5 packages display correctly with updated names/prices. Instagram and Google Maps links open in new tabs.",
+
+  "mocked_apis": {
+    "phone_otp": "Always returns 123456 - SMS not actually sent",
+    "sms_sending": "No actual SMS sent"
+  },
+
+  "bugs_verified_fixed": {
+    "bug_1_timezone": {
+      "description": "Can't select today's date (March 31) for booking - timezone issue with toISOString()",
+      "fix": "Added toDateStr() helper function using local getFullYear/getMonth/getDate instead of toISOString()",
+      "status": "FIXED - Today (March 31) is selectable and shows 7 future time slots"
+    },
+    "bug_2_packages": {
+      "description": "Packages need to be updated to new values",
+      "fix": "Updated /api/packages endpoint with 5 new packages: Basic(6/90), Linea Active(8/125), Linea Balance(10/145), Linea Gold(12/175), Linea Premium(16/200)",
+      "status": "FIXED - All 5 packages display correctly"
+    },
+    "bug_3_links": {
+      "description": "Instagram and Google Maps links don't open when clicked",
+      "fix": "Address card changed from <div> to <a> tag with target=_blank. Instagram already had target=_blank.",
+      "status": "FIXED - Both links open in new tabs"
+    }
+  }
+}
