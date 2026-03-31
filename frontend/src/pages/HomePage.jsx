@@ -20,17 +20,19 @@ const HomePage = ({ user }) => {
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [activityStatus, setActivityStatus] = useState(null);
   const [showInactivityReminder, setShowInactivityReminder] = useState(false);
+  const [pendingPackage, setPendingPackage] = useState(null);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [membershipsRes, trainingsRes, studioRes, feedbackRes, notifRes, activityRes] = await Promise.all([
+        const [membershipsRes, trainingsRes, studioRes, feedbackRes, notifRes, activityRes, myRequestsRes] = await Promise.all([
           fetch(`${API}/memberships/active`, { credentials: 'include' }),
           fetch(`${API}/trainings/upcoming`, { credentials: 'include' }),
           fetch(`${API}/studio-info`),
           fetch(`${API}/feedback/pending`, { credentials: 'include' }),
           fetch(`${API}/notifications/unread`, { credentials: 'include' }),
-          fetch(`${API}/user/activity-status`, { credentials: 'include' })
+          fetch(`${API}/user/activity-status`, { credentials: 'include' }),
+          fetch(`${API}/packages/my-requests`, { credentials: 'include' })
         ]);
 
         if (membershipsRes.ok) {
@@ -72,6 +74,12 @@ const HomePage = ({ user }) => {
           if (data.should_show_reminder && pendingFeedback.length === 0) {
             setTimeout(() => setShowInactivityReminder(true), 3000);
           }
+        }
+
+        if (myRequestsRes.ok) {
+          const requests = await myRequestsRes.json();
+          const pending = requests.find(r => r.status === 'pending');
+          if (pending) setPendingPackage(pending.package_name);
         }
       } catch (error) {
         console.error('Error fetching data:', error);
@@ -177,14 +185,16 @@ const HomePage = ({ user }) => {
           <h2 className="font-heading text-xl text-foreground">
             Aktivne članarine
           </h2>
-          <button
-            onClick={() => navigate('/clanarine')}
-            className="text-primary text-sm font-medium hover:underline flex items-center"
-            data-testid="view-all-memberships-btn"
-          >
-            Vidi sve
-            <ChevronRight className="w-4 h-4 ml-1" />
-          </button>
+          {memberships.length > 0 && (
+            <button
+              onClick={() => navigate('/clanarine')}
+              className="text-primary text-sm font-medium hover:underline flex items-center"
+              data-testid="view-all-memberships-btn"
+            >
+              Vidi sve
+              <ChevronRight className="w-4 h-4 ml-1" />
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -218,7 +228,7 @@ const HomePage = ({ user }) => {
                 <div className="mt-3 h-2 bg-secondary rounded-full overflow-hidden">
                   <div 
                     className="h-full gradient-gold rounded-full transition-all duration-500"
-                    style={{ width: `${(membership.preostali_termini / membership.ukupni_termini) * 100}%` }}
+                    style={{ width: `${(membership.preostali_termini / (membership.ukupni_termini || 1)) * 100}%` }}
                   />
                 </div>
               </div>
@@ -226,13 +236,22 @@ const HomePage = ({ user }) => {
           </div>
         ) : (
           <div className="card-linea text-center py-8" data-testid="no-memberships">
-            <p className="text-muted-foreground">Nemate aktivnih članarina</p>
-            <Button
-              onClick={() => navigate('/paketi')}
-              className="btn-primary mt-4"
-            >
-              Pogledaj pakete
-            </Button>
+            {pendingPackage ? (
+              <>
+                <p className="text-foreground font-medium">Vaš paket čeka aktivaciju nakon uplate</p>
+                <p className="text-muted-foreground text-sm mt-1">Paket: {pendingPackage}</p>
+              </>
+            ) : (
+              <>
+                <p className="text-muted-foreground">Trenutno nemate aktivnih članarina</p>
+                <Button
+                  onClick={() => navigate('/paketi')}
+                  className="btn-primary mt-4"
+                >
+                  Pogledaj pakete
+                </Button>
+              </>
+            )}
           </div>
         )}
       </section>
@@ -274,17 +293,13 @@ const HomePage = ({ user }) => {
                     <Clock className="w-4 h-4" />
                     {trainings[0].vrijeme}
                   </span>
-                  <span className="flex items-center gap-1">
-                    <UserIcon className="w-4 h-4" />
-                    {trainings[0].instruktor}
-                  </span>
                 </div>
               </div>
             </div>
           </div>
         ) : (
           <div className="card-linea text-center py-8" data-testid="no-trainings">
-            <p className="text-muted-foreground">Nemate zakazanih treninga</p>
+            <p className="text-muted-foreground">Trenutno nemate izabranih termina</p>
             <Button
               onClick={() => navigate('/termini')}
               className="btn-primary mt-4"

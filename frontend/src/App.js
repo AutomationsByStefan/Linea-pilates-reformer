@@ -41,17 +41,21 @@ export const AuthContext = {
 };
 
 // Protected Route Component
-const ProtectedRoute = ({ children }) => {
+const ProtectedRoute = ({ children, adminOnly = false }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(null);
   const [user, setUser] = useState(null);
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
-    // If user data passed from AuthCallback, skip auth check
     if (location.state?.user) {
-      setUser(location.state.user);
+      const u = location.state.user;
+      setUser(u);
       setIsAuthenticated(true);
+      // Redirect admin to admin dashboard
+      if (u.is_admin && !location.pathname.startsWith('/admin')) {
+        navigate('/admin');
+      }
       return;
     }
 
@@ -66,6 +70,16 @@ const ProtectedRoute = ({ children }) => {
         const userData = await response.json();
         setUser(userData);
         setIsAuthenticated(true);
+        // Redirect admin to admin dashboard if on client page
+        if (userData.is_admin && !location.pathname.startsWith('/admin')) {
+          navigate('/admin');
+          return;
+        }
+        // Redirect regular user away from admin pages
+        if (!userData.is_admin && adminOnly) {
+          navigate('/');
+          return;
+        }
       } catch (error) {
         setIsAuthenticated(false);
         navigate('/login');
@@ -73,7 +87,7 @@ const ProtectedRoute = ({ children }) => {
     };
 
     checkAuth();
-  }, [navigate, location.state]);
+  }, [navigate, location.state, location.pathname, adminOnly]);
 
   if (isAuthenticated === null) {
     return (
@@ -197,12 +211,20 @@ function AppRouter() {
         </ProtectedRoute>
       } />
 
-      {/* Admin routes */}
+      {/* Admin routes - use regular user session with is_admin check */}
       <Route path="/admin/login" element={<AdminLoginPage />} />
-      <Route path="/admin" element={<AdminLayout><AdminDashboardPage /></AdminLayout>} />
-      <Route path="/admin/raspored" element={<AdminLayout><AdminSchedulePage /></AdminLayout>} />
-      <Route path="/admin/rezervacije" element={<AdminLayout><AdminBookingsPage /></AdminLayout>} />
-      <Route path="/admin/korisnici" element={<AdminLayout><AdminUsersPage /></AdminLayout>} />
+      <Route path="/admin" element={
+        <ProtectedRoute adminOnly><AdminLayout><AdminDashboardPage /></AdminLayout></ProtectedRoute>
+      } />
+      <Route path="/admin/raspored" element={
+        <ProtectedRoute adminOnly><AdminLayout><AdminSchedulePage /></AdminLayout></ProtectedRoute>
+      } />
+      <Route path="/admin/rezervacije" element={
+        <ProtectedRoute adminOnly><AdminLayout><AdminBookingsPage /></AdminLayout></ProtectedRoute>
+      } />
+      <Route path="/admin/korisnici" element={
+        <ProtectedRoute adminOnly><AdminLayout><AdminUsersPage /></AdminLayout></ProtectedRoute>
+      } />
 
       {/* Fallback to login */}
       <Route path="*" element={<LoginPage />} />

@@ -118,6 +118,32 @@ class AdminSlotRequest(BaseModel):
 class AdminCancelRequest(BaseModel):
     razlog: Optional[str] = None
 
+class PackageRequestModel(BaseModel):
+    package_id: str
+
+class AdminNoteRequest(BaseModel):
+    notes: str
+
+class AdminFreezeRequest(BaseModel):
+    start_date: str
+    end_date: str
+
+class AdminStatusRequest(BaseModel):
+    status: str  # "active", "pending", "expired", "frozen"
+
+def detect_phone_country(phone: str) -> str:
+    """Detect country from phone number prefix"""
+    cleaned = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    if cleaned.startswith("+381") or cleaned.startswith("00381"):
+        return "RS"
+    if cleaned.startswith("+387") or cleaned.startswith("00387"):
+        return "BA"
+    if cleaned.startswith("06") or cleaned.startswith("07"):
+        return "RS"  # Serbian mobile prefixes
+    if cleaned.startswith("06"):
+        return "BA"  # Bosnian mobile prefixes
+    return "BA"  # Default to Bosnia
+
 # ============== HELPER FUNCTIONS ==============
 
 async def get_current_user(request: Request) -> User:
@@ -159,7 +185,23 @@ async def get_current_user(request: Request) -> User:
     return User(**user_doc)
 
 async def get_admin_user(request: Request) -> dict:
-    """Get current admin from session token"""
+    """Get current admin - supports both admin session and regular user session with is_admin flag"""
+    # First try regular user session with is_admin flag (unified auth)
+    try:
+        session_token = request.cookies.get("session_token")
+        if not session_token:
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                session_token = auth_header[7:]
+        if session_token:
+            session_doc = await db.user_sessions.find_one({"session_token": session_token}, {"_id": 0})
+            if session_doc:
+                user_doc = await db.users.find_one({"user_id": session_doc["user_id"]}, {"_id": 0})
+                if user_doc and user_doc.get("is_admin"):
+                    return user_doc
+    except Exception:
+        pass
+    # Fallback to old admin session
     session_token = request.cookies.get("admin_session_token")
     if not session_token:
         auth_header = request.headers.get("Authorization")
@@ -244,13 +286,13 @@ async def create_session(request: Request, response: Response):
             "email": auth_data["email"],
             "name": auth_data["name"],
             "picture": auth_data.get("picture"),
+            "is_admin": False,
+            "status": "active",
+            "notes": "",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_activity": datetime.now(timezone.utc).isoformat()
         }
         await db.users.insert_one(new_user)
-        
-        # Create mock membership and training for new user
-        await create_mock_data_for_user(user_id)
     
     # Create session
     session_token = auth_data.get("session_token", str(uuid.uuid4()))
@@ -287,14 +329,12 @@ async def create_session(request: Request, response: Response):
 async def get_me(request: Request):
     """Get current authenticated user"""
     user = await get_current_user(request)
-    
-    # Update last activity
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
     await db.users.update_one(
         {"user_id": user.user_id},
         {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
     )
-    
-    return user.model_dump()
+    return user_doc
 
 @api_router.post("/auth/logout")
 async def logout(request: Request, response: Response):
@@ -402,18 +442,20 @@ async def register_user(data: RegisterRequest, response: Response):
     
     # Create user
     user_id = f"user_{uuid.uuid4().hex[:12]}"
+    country_code = detect_phone_country(data.phone)
     new_user = {
         "user_id": user_id,
         "phone": data.phone,
         "name": f"{data.ime} {data.prezime}",
         "email": data.email,
+        "country_code": country_code,
+        "is_admin": False,
+        "status": "active",
+        "notes": "",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "last_activity": datetime.now(timezone.utc).isoformat()
     }
     await db.users.insert_one(new_user)
-    
-    # Create mock data
-    await create_mock_data_for_user(user_id)
     
     # Create session
     session_token = str(uuid.uuid4())
@@ -1119,7 +1161,7 @@ async def get_studio_info():
     """Get studio contact information"""
     return {
         "naziv": "Linea Reformer Pilates",
-        "telefon": "+387 59 123 456",
+        "telefon": "+38766024148",
         "instagram": "https://www.instagram.com/lineapilatesreformer/",
         "instagram_handle": "@lineapilatesreformer",
         "adresa": "Kralja Petra I Oslobodioca 55, 89101 Trebinje",
@@ -1144,6 +1186,12 @@ async def get_user_stats(request: Request):
     # Get active membership
     membership = await db.memberships.find_one(
         {"user_id": user.user_id, "tip": "aktivna"},
+        {"_id": 0}
+    )
+    
+    # Check for pending package request
+    pending_request = await db.package_requests.find_one(
+        {"user_id": user.user_id, "status": "pending"},
         {"_id": 0}
     )
     
@@ -1176,13 +1224,16 @@ async def get_user_stats(request: Request):
     return {
         "preostali_termini": membership.get("preostali_termini", 0) if membership else 0,
         "ukupni_termini": membership.get("ukupni_termini", 0) if membership else 0,
+        "naziv_paketa": membership.get("naziv", "") if membership else "",
         "datum_pocetka": membership.get("datum_pocetka") if membership else None,
         "datum_isteka": membership.get("datum_isteka") if membership else None,
         "trajanje_dana": 30,
         "zavrseni_treninzi": completed_count,
         "predstojeći_treninzi": upcoming_count,
         "sedmice_aktivnosti": weeks_active,
-        "posljednji_trening": last_training.get("datum") if last_training else None
+        "posljednji_trening": last_training.get("datum") if last_training else None,
+        "ima_aktivnu_clanarinu": membership is not None,
+        "pending_paket": pending_request.get("package_name") if pending_request else None
     }
 
 # ============== INACTIVITY CHECK ==============
@@ -1251,6 +1302,324 @@ async def search_users(q: str, request: Request):
     
     return users
 
+# ============== PACKAGE REQUESTS ==============
+
+@api_router.post("/packages/request")
+async def request_package(data: PackageRequestModel, request: Request):
+    """Client requests a package - creates pending request for admin approval"""
+    user = await get_current_user(request)
+    # Check if user already has a pending request
+    existing = await db.package_requests.find_one(
+        {"user_id": user.user_id, "status": "pending"}, {"_id": 0}
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="Već imate zahtjev za paket na čekanju.")
+    # Get package info
+    packages = {
+        "pkg_basic": {"naziv": "Basic", "cijena": 90, "termini": 6},
+        "pkg_active": {"naziv": "Linea Active", "cijena": 125, "termini": 8},
+        "pkg_balance": {"naziv": "Linea Balance", "cijena": 145, "termini": 10},
+        "pkg_gold": {"naziv": "Linea Gold", "cijena": 175, "termini": 12},
+        "pkg_premium": {"naziv": "Linea Premium", "cijena": 200, "termini": 16},
+    }
+    pkg = packages.get(data.package_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Paket nije pronađen")
+    req_id = str(uuid.uuid4())
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    package_request = {
+        "id": req_id,
+        "user_id": user.user_id,
+        "user_name": user_doc.get("name", ""),
+        "user_phone": user_doc.get("phone", ""),
+        "user_email": user_doc.get("email", ""),
+        "package_id": data.package_id,
+        "package_name": pkg["naziv"],
+        "package_price": pkg["cijena"],
+        "package_sessions": pkg["termini"],
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.package_requests.insert_one(package_request)
+    # Create admin notification
+    admins = await db.users.find({"is_admin": True}, {"_id": 0}).to_list(10)
+    for admin in admins:
+        await db.notifications.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": admin["user_id"],
+            "type": "package_request",
+            "title": "Novi zahtjev za paket",
+            "message": f"{user_doc.get('name', 'Korisnik')} je zatražio paket {pkg['naziv']} ({pkg['cijena']} KM).",
+            "data": {"request_id": req_id, "package_name": pkg["naziv"], "user_name": user_doc.get("name", "")},
+            "read": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+    return {"success": True, "message": "Vaš zahtjev za paket je poslat. Čeka aktivaciju nakon uplate.", "request_id": req_id}
+
+@api_router.get("/packages/my-requests")
+async def get_my_package_requests(request: Request):
+    """Get current user's package requests"""
+    user = await get_current_user(request)
+    requests = await db.package_requests.find(
+        {"user_id": user.user_id}, {"_id": 0}
+    ).sort("created_at", -1).to_list(20)
+    return requests
+
+# ============== ADMIN PACKAGE APPROVAL ==============
+
+@api_router.get("/admin/package-requests")
+async def admin_get_package_requests(request: Request):
+    """Get all package requests"""
+    await get_admin_user(request)
+    requests = await db.package_requests.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return requests
+
+@api_router.post("/admin/package-requests/{request_id}/approve")
+async def admin_approve_package(request_id: str, request: Request):
+    """Approve a package request - creates active membership"""
+    await get_admin_user(request)
+    pkg_req = await db.package_requests.find_one({"id": request_id}, {"_id": 0})
+    if not pkg_req:
+        raise HTTPException(status_code=404, detail="Zahtjev nije pronađen")
+    if pkg_req["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Zahtjev je već obrađen")
+    now = datetime.now(timezone.utc)
+    membership = {
+        "id": str(uuid.uuid4()),
+        "user_id": pkg_req["user_id"],
+        "naziv": pkg_req["package_name"],
+        "package_id": pkg_req["package_id"],
+        "tip": "aktivna",
+        "preostali_termini": pkg_req["package_sessions"],
+        "ukupni_termini": pkg_req["package_sessions"],
+        "cijena": pkg_req["package_price"],
+        "datum_pocetka": now.isoformat(),
+        "datum_isteka": (now + timedelta(days=30)).isoformat(),
+        "created_at": now.isoformat()
+    }
+    # Deactivate any existing active membership
+    await db.memberships.update_many(
+        {"user_id": pkg_req["user_id"], "tip": "aktivna"},
+        {"$set": {"tip": "prethodna"}}
+    )
+    await db.memberships.insert_one(membership)
+    await db.package_requests.update_one(
+        {"id": request_id},
+        {"$set": {"status": "approved", "approved_at": now.isoformat()}}
+    )
+    # Notify client
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": pkg_req["user_id"],
+        "type": "package_approved",
+        "title": "Paket aktiviran",
+        "message": f"Vaš paket {pkg_req['package_name']} je aktiviran! Imate {pkg_req['package_sessions']} termina na raspolaganju.",
+        "data": {"package_name": pkg_req["package_name"]},
+        "read": False,
+        "created_at": now.isoformat()
+    })
+    return {"success": True, "message": f"Paket {pkg_req['package_name']} je aktiviran za korisnika {pkg_req['user_name']}."}
+
+@api_router.post("/admin/package-requests/{request_id}/reject")
+async def admin_reject_package(request_id: str, request: Request):
+    """Reject a package request"""
+    await get_admin_user(request)
+    pkg_req = await db.package_requests.find_one({"id": request_id}, {"_id": 0})
+    if not pkg_req:
+        raise HTTPException(status_code=404, detail="Zahtjev nije pronađen")
+    await db.package_requests.update_one(
+        {"id": request_id},
+        {"$set": {"status": "rejected", "rejected_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": pkg_req["user_id"],
+        "type": "package_rejected",
+        "title": "Zahtjev za paket odbijen",
+        "message": f"Vaš zahtjev za paket {pkg_req['package_name']} nije odobren. Kontaktirajte nas za više informacija.",
+        "data": {},
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    return {"success": True, "message": "Zahtjev je odbijen."}
+
+# ============== ADMIN SESSION DEDUCTION ==============
+
+@api_router.post("/admin/users/{user_id}/deduct-session")
+async def admin_deduct_session(user_id: str, request: Request):
+    """Deduct one session from user's membership"""
+    await get_admin_user(request)
+    membership = await db.memberships.find_one(
+        {"user_id": user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}}, {"_id": 0}
+    )
+    if not membership:
+        raise HTTPException(status_code=400, detail="Korisnik nema aktivnu članarinu sa preostalim terminima")
+    await db.memberships.update_one(
+        {"id": membership["id"]},
+        {"$inc": {"preostali_termini": -1}}
+    )
+    remaining = membership["preostali_termini"] - 1
+    return {"success": True, "message": f"Termin je oduzet. Preostalo: {remaining}", "preostali": remaining}
+
+# ============== ADMIN PACKAGE FREEZE ==============
+
+@api_router.post("/admin/users/{user_id}/freeze")
+async def admin_freeze_package(user_id: str, data: AdminFreezeRequest, request: Request):
+    """Freeze user's package"""
+    await get_admin_user(request)
+    membership = await db.memberships.find_one(
+        {"user_id": user_id, "tip": "aktivna"}, {"_id": 0}
+    )
+    if not membership:
+        raise HTTPException(status_code=400, detail="Korisnik nema aktivnu članarinu")
+    await db.memberships.update_one(
+        {"id": membership["id"]},
+        {"$set": {
+            "tip": "zamrznuta",
+            "freeze_start": data.start_date,
+            "freeze_end": data.end_date
+        }}
+    )
+    await db.users.update_one({"user_id": user_id}, {"$set": {"status": "frozen"}})
+    return {"success": True, "message": f"Članarina je zamrznuta od {data.start_date} do {data.end_date}"}
+
+@api_router.post("/admin/users/{user_id}/unfreeze")
+async def admin_unfreeze_package(user_id: str, request: Request):
+    """Unfreeze user's package"""
+    await get_admin_user(request)
+    membership = await db.memberships.find_one(
+        {"user_id": user_id, "tip": "zamrznuta"}, {"_id": 0}
+    )
+    if not membership:
+        raise HTTPException(status_code=400, detail="Korisnik nema zamrznutu članarinu")
+    # Extend expiry by freeze duration
+    freeze_start = membership.get("freeze_start")
+    freeze_end = membership.get("freeze_end")
+    extra_days = 0
+    if freeze_start and freeze_end:
+        try:
+            fs = datetime.strptime(freeze_start, "%Y-%m-%d")
+            fe = datetime.strptime(freeze_end, "%Y-%m-%d")
+            extra_days = (fe - fs).days
+        except Exception:
+            pass
+    original_expiry = membership.get("datum_isteka", "")
+    if isinstance(original_expiry, str):
+        original_expiry = datetime.fromisoformat(original_expiry.replace("Z", "+00:00"))
+    if original_expiry.tzinfo is None:
+        original_expiry = original_expiry.replace(tzinfo=timezone.utc)
+    new_expiry = (original_expiry + timedelta(days=extra_days)).isoformat()
+    await db.memberships.update_one(
+        {"id": membership["id"]},
+        {"$set": {"tip": "aktivna", "datum_isteka": new_expiry}, "$unset": {"freeze_start": "", "freeze_end": ""}}
+    )
+    await db.users.update_one({"user_id": user_id}, {"$set": {"status": "active"}})
+    return {"success": True, "message": f"Članarina je odmrznuta. Produžena za {extra_days} dana."}
+
+# ============== ADMIN CLIENT NOTES ==============
+
+@api_router.put("/admin/users/{user_id}/notes")
+async def admin_update_notes(user_id: str, data: AdminNoteRequest, request: Request):
+    """Update client notes"""
+    await get_admin_user(request)
+    await db.users.update_one({"user_id": user_id}, {"$set": {"notes": data.notes}})
+    return {"success": True, "message": "Bilješka je ažurirana"}
+
+@api_router.put("/admin/users/{user_id}/status")
+async def admin_update_user_status(user_id: str, data: AdminStatusRequest, request: Request):
+    """Update user account status"""
+    await get_admin_user(request)
+    await db.users.update_one({"user_id": user_id}, {"$set": {"status": data.status}})
+    return {"success": True, "message": f"Status korisnika je ažuriran na: {data.status}"}
+
+# ============== ADMIN FINANCIAL OVERVIEW ==============
+
+@api_router.get("/admin/financial")
+async def admin_financial_overview(request: Request):
+    """Get financial overview"""
+    await get_admin_user(request)
+    now = datetime.now(timezone.utc)
+    current_month = now.strftime("%Y-%m")
+    # This month's approved packages
+    this_month_requests = await db.package_requests.find(
+        {"status": "approved", "approved_at": {"$regex": f"^{current_month}"}},
+        {"_id": 0}
+    ).to_list(1000)
+    this_month_revenue = sum(r.get("package_price", 0) for r in this_month_requests)
+    # Monthly revenue for past 12 months
+    monthly_revenue = []
+    for i in range(12):
+        month_dt = now - timedelta(days=30 * i)
+        month_str = month_dt.strftime("%Y-%m")
+        month_requests = await db.package_requests.find(
+            {"status": "approved", "approved_at": {"$regex": f"^{month_str}"}},
+            {"_id": 0}
+        ).to_list(1000)
+        revenue = sum(r.get("package_price", 0) for r in month_requests)
+        monthly_revenue.append({"month": month_str, "revenue": revenue, "count": len(month_requests)})
+    # Revenue by package type
+    all_approved = await db.package_requests.find({"status": "approved"}, {"_id": 0}).to_list(5000)
+    by_package = {}
+    for r in all_approved:
+        name = r.get("package_name", "Unknown")
+        if name not in by_package:
+            by_package[name] = {"count": 0, "revenue": 0}
+        by_package[name]["count"] += 1
+        by_package[name]["revenue"] += r.get("package_price", 0)
+    # Client stats
+    total_users = await db.users.count_documents({"is_admin": {"$ne": True}})
+    active_memberships = await db.memberships.count_documents({"tip": "aktivna"})
+    expired_memberships = await db.memberships.count_documents({"tip": {"$in": ["prethodna", "istekla"]}})
+    # New clients this month
+    new_clients = await db.users.count_documents({
+        "is_admin": {"$ne": True},
+        "created_at": {"$regex": f"^{current_month}"}
+    })
+    return {
+        "ovaj_mjesec_prihod": this_month_revenue,
+        "mjesecni_prihod": list(reversed(monthly_revenue)),
+        "prihod_po_paketu": [{"naziv": k, **v} for k, v in by_package.items()],
+        "ukupno_klijenata": total_users,
+        "aktivne_clanarine": active_memberships,
+        "istekle_clanarine": expired_memberships,
+        "novi_klijenti_mjesec": new_clients,
+        "najprodavaniji": max(by_package.items(), key=lambda x: x[1]["count"])[0] if by_package else "-"
+    }
+
+# ============== ADMIN EXPIRY ALERTS ==============
+
+@api_router.get("/admin/alerts")
+async def admin_expiry_alerts(request: Request):
+    """Get expiry alerts - packages expiring in 7 days or 2 or fewer sessions remaining"""
+    await get_admin_user(request)
+    now = datetime.now(timezone.utc)
+    seven_days = (now + timedelta(days=7)).isoformat()
+    # Expiring within 7 days
+    expiring = await db.memberships.find(
+        {"tip": "aktivna", "datum_isteka": {"$lte": seven_days}},
+        {"_id": 0}
+    ).to_list(500)
+    # 2 or fewer sessions remaining
+    low_sessions = await db.memberships.find(
+        {"tip": "aktivna", "preostali_termini": {"$lte": 2}},
+        {"_id": 0}
+    ).to_list(500)
+    # Enrich with user info
+    async def enrich(memberships):
+        result = []
+        seen_users = set()
+        for m in memberships:
+            if m["user_id"] in seen_users:
+                continue
+            seen_users.add(m["user_id"])
+            user = await db.users.find_one({"user_id": m["user_id"]}, {"_id": 0, "name": 1, "phone": 1, "email": 1})
+            result.append({**m, "korisnik": user})
+        return result
+    return {
+        "isticu_uskoro": await enrich(expiring),
+        "malo_termina": await enrich(low_sessions)
+    }
+
 # ============== ROOT ==============
 
 @api_router.get("/")
@@ -1312,43 +1681,70 @@ async def admin_dashboard(request: Request):
     await get_admin_user(request)
     now = datetime.now(timezone.utc)
     today_str = now.strftime("%Y-%m-%d")
-    total_users = await db.users.count_documents({})
+    total_users = await db.users.count_documents({"is_admin": {"$ne": True}})
     active_memberships = await db.memberships.count_documents({"tip": "aktivna"})
     today_trainings = await db.trainings.count_documents({
         "datum": {"$regex": f"^{today_str}"}, "tip": "predstojeći"
     })
     total_bookings = await db.trainings.count_documents({})
+    pending_requests = await db.package_requests.count_documents({"status": "pending"})
     recent_users = await db.users.find(
-        {}, {"_id": 0, "user_id": 1, "name": 1, "email": 1, "phone": 1, "created_at": 1}
+        {"is_admin": {"$ne": True}}, {"_id": 0, "user_id": 1, "name": 1, "email": 1, "phone": 1, "created_at": 1}
     ).sort("created_at", -1).to_list(5)
+    recent_requests = await db.package_requests.find(
+        {"status": "pending"}, {"_id": 0}
+    ).sort("created_at", -1).to_list(10)
     return {
         "ukupno_korisnika": total_users,
         "aktivne_clanarine": active_memberships,
         "danasnji_treninzi": today_trainings,
         "ukupno_rezervacija": total_bookings,
-        "posljednji_korisnici": recent_users
+        "zahtjevi_na_cekanju": pending_requests,
+        "posljednji_korisnici": recent_users,
+        "posljednji_zahtjevi": recent_requests
     }
 
 # ============== ADMIN USERS ==============
 
 @api_router.get("/admin/users")
 async def admin_get_users(request: Request):
-    """Get all users"""
+    """Get all users with full details"""
     await get_admin_user(request)
-    users = await db.users.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    users = await db.users.find({"is_admin": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(500)
     result = []
     for u in users:
         membership = await db.memberships.find_one(
-            {"user_id": u["user_id"], "tip": "aktivna"}, {"_id": 0}
+            {"user_id": u["user_id"], "tip": {"$in": ["aktivna", "zamrznuta"]}}, {"_id": 0}
         )
         upcoming = await db.trainings.count_documents(
             {"user_id": u["user_id"], "tip": "predstojeći"}
         )
+        pending_req = await db.package_requests.find_one(
+            {"user_id": u["user_id"], "status": "pending"}, {"_id": 0}
+        )
+        user_status = u.get("status", "active")
+        if membership and membership.get("tip") == "zamrznuta":
+            user_status = "frozen"
+        elif membership and membership.get("tip") == "aktivna":
+            user_status = "active"
+        elif pending_req:
+            user_status = "pending"
+        elif not membership:
+            user_status = "pending" if pending_req else u.get("status", "active")
         result.append({
             **u,
-            "aktivna_clanarina": membership is not None,
+            "aktivna_clanarina": membership is not None and membership.get("tip") == "aktivna",
+            "naziv_paketa": membership.get("naziv", "-") if membership else (pending_req.get("package_name", "Na čekanju") if pending_req else "-"),
             "preostali_termini": membership.get("preostali_termini", 0) if membership else 0,
-            "predstojeći_treninzi": upcoming
+            "ukupni_termini": membership.get("ukupni_termini", 0) if membership else 0,
+            "datum_aktivacije": membership.get("datum_pocetka", "") if membership else "",
+            "datum_isteka": membership.get("datum_isteka", "") if membership else "",
+            "predstojeći_treninzi": upcoming,
+            "membership_status": membership.get("tip", "-") if membership else "-",
+            "freeze_start": membership.get("freeze_start") if membership else None,
+            "freeze_end": membership.get("freeze_end") if membership else None,
+            "korisnik_status": user_status,
+            "pending_request": pending_req
         })
     return result
 
@@ -1621,9 +2017,32 @@ async def check_inactivity_reminders():
 # ============== SEED DATA ==============
 
 async def seed_admin():
-    """Create default admin if none exists"""
-    existing = await db.admins.find_one({"email": "admin@linea.ba"})
-    if not existing:
+    """Create admin users in the regular users collection"""
+    admin_phones = ["+38766024148"]
+    for phone in admin_phones:
+        existing = await db.users.find_one({"phone": phone})
+        if existing:
+            if not existing.get("is_admin"):
+                await db.users.update_one({"phone": phone}, {"$set": {"is_admin": True}})
+                logger.info(f"Marked {phone} as admin")
+        else:
+            admin_user = {
+                "user_id": f"admin_{uuid.uuid4().hex[:8]}",
+                "phone": phone,
+                "name": "Admin",
+                "email": "",
+                "country_code": detect_phone_country(phone),
+                "is_admin": True,
+                "status": "active",
+                "notes": "",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_activity": datetime.now(timezone.utc).isoformat()
+            }
+            await db.users.insert_one(admin_user)
+            logger.info(f"Admin user created: {phone}")
+    # Keep legacy admin for backward compatibility
+    existing_legacy = await db.admins.find_one({"email": "admin@linea.ba"})
+    if not existing_legacy:
         admin = {
             "admin_id": f"admin_{uuid.uuid4().hex[:8]}",
             "email": "admin@linea.ba",
@@ -1632,7 +2051,7 @@ async def seed_admin():
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         await db.admins.insert_one(admin)
-        logger.info("Default admin created: admin@linea.ba / admin123")
+        logger.info("Legacy admin created: admin@linea.ba")
 
 async def seed_schedule():
     """Seed schedule slots for 30 days if empty"""

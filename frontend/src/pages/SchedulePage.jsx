@@ -336,7 +336,7 @@ const SchedulePage = () => {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-foreground">Vaš termin za ovaj dan</p>
-              <p className="text-xs text-muted-foreground">{existingBookingForDay.vrijeme} - {existingBookingForDay.instruktor}</p>
+              <p className="text-xs text-muted-foreground">{existingBookingForDay.vrijeme}</p>
             </div>
             {canReschedule(existingBookingForDay) && (
               <Button onClick={() => setShowRescheduleDialog(true)} variant="outline" className="h-8 text-xs border-primary text-primary" data-testid="reschedule-btn">
@@ -460,7 +460,7 @@ const SchedulePage = () => {
           <div className="py-4 space-y-4">
             <div className="bg-secondary/50 rounded-xl p-3 text-center">
               <p className="text-sm text-muted-foreground">Trenutni termin</p>
-              <p className="font-semibold text-foreground">{existingBookingForDay?.vrijeme} - {existingBookingForDay?.instruktor}</p>
+              <p className="font-semibold text-foreground">{existingBookingForDay?.vrijeme}</p>
             </div>
             <p className="text-center text-muted-foreground text-sm">
               Imate 30 minuta od trenutka rezervacije da promijenite termin. Odaberite novi termin iz rasporeda.
