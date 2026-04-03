@@ -2252,11 +2252,12 @@ async def seed_packages():
     if count > 0:
         return
     default_packages = [
-        {"id": "pkg_basic", "naziv": "Basic", "opis": "Mala grupa do 3 osobe", "cijena": 90, "valuta": "KM", "termini": 6, "trajanje_dana": 30, "popular": False, "active": True},
-        {"id": "pkg_active", "naziv": "Linea Active", "opis": "Mala grupa do 3 osobe", "cijena": 125, "valuta": "KM", "termini": 8, "trajanje_dana": 30, "popular": False, "active": True},
-        {"id": "pkg_balance", "naziv": "Linea Balance", "opis": "Mala grupa do 3 osobe", "cijena": 145, "valuta": "KM", "termini": 10, "trajanje_dana": 30, "popular": True, "active": True},
-        {"id": "pkg_gold", "naziv": "Linea Gold", "opis": "Mala grupa do 3 osobe", "cijena": 175, "valuta": "KM", "termini": 12, "trajanje_dana": 30, "popular": False, "active": True},
-        {"id": "pkg_premium", "naziv": "Linea Premium", "opis": "Mala grupa do 3 osobe", "cijena": 200, "valuta": "KM", "termini": 16, "trajanje_dana": 30, "popular": False, "active": True},
+        {"id": "pkg_single", "naziv": "Pojedinacni", "opis": "Mala grupa do 3 osobe", "cijena": 20, "valuta": "KM", "termini": 1, "trajanje_dana": 30, "popular": False, "best_value": False, "active": True},
+        {"id": "pkg_basic", "naziv": "Basic", "opis": "Mala grupa do 3 osobe", "cijena": 90, "valuta": "KM", "termini": 6, "trajanje_dana": 30, "popular": False, "best_value": False, "active": True},
+        {"id": "pkg_active", "naziv": "Linea Active", "opis": "Mala grupa do 3 osobe", "cijena": 125, "valuta": "KM", "termini": 8, "trajanje_dana": 30, "popular": False, "best_value": False, "active": True},
+        {"id": "pkg_balance", "naziv": "Linea Balance", "opis": "Mala grupa do 3 osobe", "cijena": 145, "valuta": "KM", "termini": 10, "trajanje_dana": 30, "popular": False, "best_value": False, "active": True},
+        {"id": "pkg_gold", "naziv": "Linea Gold", "opis": "Mala grupa do 3 osobe", "cijena": 175, "valuta": "KM", "termini": 12, "trajanje_dana": 30, "popular": True, "best_value": False, "active": True},
+        {"id": "pkg_premium", "naziv": "Linea Premium", "opis": "Mala grupa do 3 osobe", "cijena": 200, "valuta": "KM", "termini": 16, "trajanje_dana": 30, "popular": False, "best_value": True, "active": True},
     ]
     for pkg in default_packages:
         pkg["created_at"] = datetime.now(timezone.utc).isoformat()

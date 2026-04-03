@@ -81,12 +81,17 @@ const PackagesPage = () => {
           {packages.map((pkg) => (
             <div
               key={pkg.id}
-              className={`card-linea relative overflow-hidden transition-all ${pkg.popular ? 'ring-2 ring-primary' : ''}`}
+              className={`card-linea relative overflow-hidden transition-all ${pkg.popular ? 'ring-2 ring-primary' : ''} ${pkg.best_value ? 'ring-2 ring-emerald-500/60' : ''}`}
               data-testid="package-card"
             >
               {pkg.popular && (
                 <div className="absolute top-0 right-0 bg-primary text-white text-[10px] px-3 py-1 rounded-bl-xl font-medium">
                   Najpopularniji
+                </div>
+              )}
+              {pkg.best_value && (
+                <div className="absolute top-0 right-0 bg-emerald-600 text-white text-[10px] px-3 py-1 rounded-bl-xl font-medium">
+                  Najisplativiji
                 </div>
               )}
               <div className="flex justify-between items-start mb-3">
@@ -102,12 +107,12 @@ const PackagesPage = () => {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Check className="w-4 h-4 text-primary" />
-                  <span>{pkg.termini} termina / mjesec</span>
+                  <span>{pkg.termini} {pkg.termini === 1 ? 'termin' : 'termina'} / mjesec</span>
                 </div>
                 <Button
                   onClick={() => setSelectedPkg(pkg)}
                   disabled={!!myRequest}
-                  className={`h-10 rounded-full text-sm px-5 ${pkg.popular ? 'btn-primary' : 'bg-secondary hover:bg-secondary/80 text-foreground'}`}
+                  className={`h-10 rounded-full text-sm px-5 ${pkg.popular || pkg.best_value ? 'btn-primary' : 'bg-secondary hover:bg-secondary/80 text-foreground'}`}
                   data-testid="select-package-btn"
                 >
                   {myRequest ? 'Na čekanju' : 'Odaberi'}
