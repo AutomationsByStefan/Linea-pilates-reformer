@@ -23,13 +23,13 @@ const Layout = ({ children, user, hideNav = false }) => {
     <div className="mobile-container" data-testid="app-layout">
       {/* Admin Panel Button */}
       {isAdmin && (
-        <div className="fixed top-3 right-3 z-50">
+        <div className="fixed top-4 right-4 z-50">
           <button
             onClick={() => navigate('/admin')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#2C2C2C] text-white text-xs font-medium shadow-lg hover:bg-[#1a1a1a] transition-colors"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-[#C4A574] text-white text-sm font-semibold shadow-xl hover:bg-[#A68B5B] transition-colors border-2 border-white/30"
             data-testid="admin-panel-btn"
           >
-            <Settings className="w-3.5 h-3.5" />
+            <Settings className="w-4 h-4" />
             Admin Panel
           </button>
         </div>
