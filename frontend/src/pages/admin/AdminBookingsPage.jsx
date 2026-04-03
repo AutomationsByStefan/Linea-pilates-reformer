@@ -121,13 +121,12 @@ const AdminBookingsPage = () => {
       ) : filtered.length === 0 ? (
         <div className="text-center py-16 text-white/40">Nema rezervacija</div>
       ) : (
-        <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+        <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden overflow-x-auto">
           {/* Desktop table header */}
-          <div className="hidden lg:grid grid-cols-6 gap-4 px-5 py-3 bg-white/5 border-b border-white/10 text-white/50 text-xs font-medium uppercase tracking-wider">
+          <div className="hidden lg:grid grid-cols-5 gap-4 px-5 py-3 bg-white/5 border-b border-white/10 text-white/50 text-xs font-medium uppercase tracking-wider">
             <span>Korisnik</span>
             <span>Datum</span>
             <span>Vrijeme</span>
-            <span>Instruktor</span>
             <span>Status</span>
             <span>Akcija</span>
           </div>
@@ -148,7 +147,6 @@ const AdminBookingsPage = () => {
                   </div>
                   <div className="flex items-center justify-between text-xs text-white/50">
                     <span>{formatDate(b.datum)} u {b.vrijeme}</span>
-                    <span>{b.instruktor}</span>
                   </div>
                   {b.tip === 'predstojeći' && (
                     <Button onClick={() => setCancelDialog(b)} variant="ghost" className="h-8 text-red-400 text-xs w-full" data-testid="cancel-booking-btn">
@@ -158,14 +156,13 @@ const AdminBookingsPage = () => {
                 </div>
 
                 {/* Desktop layout */}
-                <div className="hidden lg:grid grid-cols-6 gap-4 items-center">
+                <div className="hidden lg:grid grid-cols-5 gap-4 items-center">
                   <div>
                     <p className="text-white text-sm">{b.korisnik?.name || 'Nepoznat'}</p>
                     <p className="text-white/40 text-xs">{b.korisnik?.email || b.korisnik?.phone || '-'}</p>
                   </div>
                   <p className="text-white/70 text-sm">{formatDate(b.datum)}</p>
                   <p className="text-white/70 text-sm">{b.vrijeme}</p>
-                  <p className="text-white/70 text-sm">{b.instruktor}</p>
                   <span className={`text-xs px-2 py-1 rounded-full w-fit ${statusColors[b.tip] || 'bg-gray-500/20 text-gray-400'}`}>
                     {statusLabels[b.tip] || b.tip}
                   </span>

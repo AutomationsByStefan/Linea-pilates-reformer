@@ -131,6 +131,33 @@ class AdminFreezeRequest(BaseModel):
 class AdminStatusRequest(BaseModel):
     status: str  # "active", "pending", "expired", "frozen"
 
+class AdminCustomMembershipRequest(BaseModel):
+    user_id: str
+    package_id: str
+    naziv: str
+    cijena: float
+    termini: int
+    trajanje_dana: int = 30
+
+class ManualIncomeRequest(BaseModel):
+    iznos: float
+    opis: str
+    datum: Optional[str] = None
+    kategorija: str = "ostalo"
+
+class AdminReminderRequest(BaseModel):
+    tekst: str
+    datum: Optional[str] = None
+
+class PackageCreateRequest(BaseModel):
+    naziv: str
+    opis: str = "Mala grupa do 3 osobe"
+    cijena: float
+    termini: int
+    trajanje_dana: int = 30
+    popular: bool = False
+    active: bool = True
+
 def detect_phone_country(phone: str) -> str:
     """Detect country from phone number prefix"""
     cleaned = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
@@ -1099,59 +1126,15 @@ async def get_schedule():
     
     return result
 
-# ============== PACKAGES (MOCK DATA) ==============
+# ============== PACKAGES (FROM DATABASE) ==============
 
 @api_router.get("/packages")
 async def get_packages():
-    """Get available membership packages"""
-    packages = [
-        {
-            "id": "pkg_basic",
-            "naziv": "Basic",
-            "opis": "Mala grupa do 3 osobe",
-            "cijena": 90,
-            "valuta": "KM",
-            "termini": 6,
-            "trajanje_dana": 30
-        },
-        {
-            "id": "pkg_active",
-            "naziv": "Linea Active",
-            "opis": "Mala grupa do 3 osobe",
-            "cijena": 125,
-            "valuta": "KM",
-            "termini": 8,
-            "trajanje_dana": 30
-        },
-        {
-            "id": "pkg_balance",
-            "naziv": "Linea Balance",
-            "opis": "Mala grupa do 3 osobe",
-            "cijena": 145,
-            "valuta": "KM",
-            "termini": 10,
-            "trajanje_dana": 30,
-            "popular": True
-        },
-        {
-            "id": "pkg_gold",
-            "naziv": "Linea Gold",
-            "opis": "Mala grupa do 3 osobe",
-            "cijena": 175,
-            "valuta": "KM",
-            "termini": 12,
-            "trajanje_dana": 30
-        },
-        {
-            "id": "pkg_premium",
-            "naziv": "Linea Premium",
-            "opis": "Mala grupa do 3 osobe",
-            "cijena": 200,
-            "valuta": "KM",
-            "termini": 16,
-            "trajanje_dana": 30
-        }
-    ]
+    """Get available membership packages from database"""
+    packages = await db.packages.find(
+        {"active": {"$ne": False}},
+        {"_id": 0}
+    ).sort("cijena", 1).to_list(50)
     return packages
 
 # ============== STUDIO INFO ==============
@@ -1314,15 +1297,8 @@ async def request_package(data: PackageRequestModel, request: Request):
     )
     if existing:
         raise HTTPException(status_code=400, detail="Već imate zahtjev za paket na čekanju.")
-    # Get package info
-    packages = {
-        "pkg_basic": {"naziv": "Basic", "cijena": 90, "termini": 6},
-        "pkg_active": {"naziv": "Linea Active", "cijena": 125, "termini": 8},
-        "pkg_balance": {"naziv": "Linea Balance", "cijena": 145, "termini": 10},
-        "pkg_gold": {"naziv": "Linea Gold", "cijena": 175, "termini": 12},
-        "pkg_premium": {"naziv": "Linea Premium", "cijena": 200, "termini": 16},
-    }
-    pkg = packages.get(data.package_id)
+    # Get package info from database
+    pkg = await db.packages.find_one({"id": data.package_id}, {"_id": 0})
     if not pkg:
         raise HTTPException(status_code=404, detail="Paket nije pronađen")
     req_id = str(uuid.uuid4())
@@ -1377,7 +1353,7 @@ async def admin_get_package_requests(request: Request):
 @api_router.post("/admin/package-requests/{request_id}/approve")
 async def admin_approve_package(request_id: str, request: Request):
     """Approve a package request - creates active membership"""
-    await get_admin_user(request)
+    admin_user = await get_admin_user(request)
     pkg_req = await db.package_requests.find_one({"id": request_id}, {"_id": 0})
     if not pkg_req:
         raise HTTPException(status_code=404, detail="Zahtjev nije pronađen")
@@ -1403,9 +1379,10 @@ async def admin_approve_package(request_id: str, request: Request):
         {"$set": {"tip": "prethodna"}}
     )
     await db.memberships.insert_one(membership)
+    admin_name = admin_user.get("name", admin_user.get("email", "Admin"))
     await db.package_requests.update_one(
         {"id": request_id},
-        {"$set": {"status": "approved", "approved_at": now.isoformat()}}
+        {"$set": {"status": "approved", "approved_at": now.isoformat(), "approved_by": admin_name}}
     )
     # Notify client
     await db.notifications.insert_one({
@@ -1536,7 +1513,7 @@ async def admin_update_user_status(user_id: str, data: AdminStatusRequest, reque
 
 @api_router.get("/admin/financial")
 async def admin_financial_overview(request: Request):
-    """Get financial overview"""
+    """Get financial overview including manual income"""
     await get_admin_user(request)
     now = datetime.now(timezone.utc)
     current_month = now.strftime("%Y-%m")
@@ -1545,18 +1522,41 @@ async def admin_financial_overview(request: Request):
         {"status": "approved", "approved_at": {"$regex": f"^{current_month}"}},
         {"_id": 0}
     ).to_list(1000)
-    this_month_revenue = sum(r.get("package_price", 0) for r in this_month_requests)
+    this_month_pkg_revenue = sum(r.get("package_price", 0) for r in this_month_requests)
+    # This month's manual income
+    this_month_manual = await db.manual_income.find(
+        {"datum": {"$regex": f"^{current_month}"}},
+        {"_id": 0}
+    ).to_list(1000)
+    this_month_manual_revenue = sum(m.get("iznos", 0) for m in this_month_manual)
+    this_month_revenue = this_month_pkg_revenue + this_month_manual_revenue
     # Monthly revenue for past 12 months
     monthly_revenue = []
     for i in range(12):
         month_dt = now - timedelta(days=30 * i)
         month_str = month_dt.strftime("%Y-%m")
-        month_requests = await db.package_requests.find(
-            {"status": "approved", "approved_at": {"$regex": f"^{month_str}"}},
-            {"_id": 0}
-        ).to_list(1000)
-        revenue = sum(r.get("package_price", 0) for r in month_requests)
-        monthly_revenue.append({"month": month_str, "revenue": revenue, "count": len(month_requests)})
+        # Check archive first
+        archived = await db.revenue_archive.find_one({"month": month_str}, {"_id": 0})
+        if archived and i > 0:
+            monthly_revenue.append(archived)
+        else:
+            month_requests = await db.package_requests.find(
+                {"status": "approved", "approved_at": {"$regex": f"^{month_str}"}},
+                {"_id": 0}
+            ).to_list(1000)
+            pkg_rev = sum(r.get("package_price", 0) for r in month_requests)
+            month_manual = await db.manual_income.find(
+                {"datum": {"$regex": f"^{month_str}"}},
+                {"_id": 0}
+            ).to_list(1000)
+            manual_rev = sum(m.get("iznos", 0) for m in month_manual)
+            monthly_revenue.append({
+                "month": month_str,
+                "revenue": pkg_rev + manual_rev,
+                "pkg_revenue": pkg_rev,
+                "manual_revenue": manual_rev,
+                "count": len(month_requests)
+            })
     # Revenue by package type
     all_approved = await db.package_requests.find({"status": "approved"}, {"_id": 0}).to_list(5000)
     by_package = {}
@@ -1577,6 +1577,8 @@ async def admin_financial_overview(request: Request):
     })
     return {
         "ovaj_mjesec_prihod": this_month_revenue,
+        "ovaj_mjesec_paketi": this_month_pkg_revenue,
+        "ovaj_mjesec_rucni": this_month_manual_revenue,
         "mjesecni_prihod": list(reversed(monthly_revenue)),
         "prihod_po_paketu": [{"naziv": k, **v} for k, v in by_package.items()],
         "ukupno_klijenata": total_users,
@@ -1585,6 +1587,234 @@ async def admin_financial_overview(request: Request):
         "novi_klijenti_mjesec": new_clients,
         "najprodavaniji": max(by_package.items(), key=lambda x: x[1]["count"])[0] if by_package else "-"
     }
+
+# ============== ADMIN MANUAL INCOME ==============
+
+@api_router.get("/admin/manual-income")
+async def admin_get_manual_income(request: Request):
+    """Get all manual income entries"""
+    await get_admin_user(request)
+    entries = await db.manual_income.find({}, {"_id": 0}).sort("datum", -1).to_list(500)
+    return entries
+
+@api_router.post("/admin/manual-income")
+async def admin_add_manual_income(data: ManualIncomeRequest, request: Request):
+    """Add a manual income entry"""
+    admin_user = await get_admin_user(request)
+    entry = {
+        "id": str(uuid.uuid4()),
+        "iznos": data.iznos,
+        "opis": data.opis,
+        "kategorija": data.kategorija,
+        "datum": data.datum or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "added_by": admin_user.get("name", "Admin"),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.manual_income.insert_one(entry)
+    return {"success": True, "message": f"Prihod od {data.iznos} KM je dodan.", "entry": {k: v for k, v in entry.items() if k != "_id"}}
+
+@api_router.delete("/admin/manual-income/{entry_id}")
+async def admin_delete_manual_income(entry_id: str, request: Request):
+    """Delete a manual income entry"""
+    await get_admin_user(request)
+    result = await db.manual_income.delete_one({"id": entry_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Unos nije pronađen")
+    return {"success": True, "message": "Unos je obrisan"}
+
+# ============== ADMIN REMINDERS ==============
+
+@api_router.get("/admin/reminders")
+async def admin_get_reminders(request: Request):
+    """Get admin reminders"""
+    await get_admin_user(request)
+    reminders = await db.admin_reminders.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return reminders
+
+@api_router.post("/admin/reminders")
+async def admin_add_reminder(data: AdminReminderRequest, request: Request):
+    """Add an admin reminder"""
+    admin_user = await get_admin_user(request)
+    reminder = {
+        "id": str(uuid.uuid4()),
+        "tekst": data.tekst,
+        "datum": data.datum or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "zavrseno": False,
+        "added_by": admin_user.get("name", "Admin"),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.admin_reminders.insert_one(reminder)
+    return {"success": True, "message": "Podsjetnik je dodan.", "reminder": {k: v for k, v in reminder.items() if k != "_id"}}
+
+@api_router.post("/admin/reminders/{reminder_id}/toggle")
+async def admin_toggle_reminder(reminder_id: str, request: Request):
+    """Toggle reminder completed status"""
+    await get_admin_user(request)
+    reminder = await db.admin_reminders.find_one({"id": reminder_id}, {"_id": 0})
+    if not reminder:
+        raise HTTPException(status_code=404, detail="Podsjetnik nije pronađen")
+    new_status = not reminder.get("zavrseno", False)
+    await db.admin_reminders.update_one({"id": reminder_id}, {"$set": {"zavrseno": new_status}})
+    return {"success": True, "zavrseno": new_status}
+
+@api_router.delete("/admin/reminders/{reminder_id}")
+async def admin_delete_reminder(reminder_id: str, request: Request):
+    """Delete a reminder"""
+    await get_admin_user(request)
+    result = await db.admin_reminders.delete_one({"id": reminder_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Podsjetnik nije pronađen")
+    return {"success": True, "message": "Podsjetnik je obrisan"}
+
+# ============== ADMIN CUSTOM MEMBERSHIP ==============
+
+@api_router.post("/admin/users/{user_id}/custom-membership")
+async def admin_create_custom_membership(user_id: str, data: AdminCustomMembershipRequest, request: Request):
+    """Admin creates a custom membership directly for a user (bypassing package requests)"""
+    admin_user = await get_admin_user(request)
+    # Verify user exists
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
+    now = datetime.now(timezone.utc)
+    # Deactivate any existing active membership
+    await db.memberships.update_many(
+        {"user_id": user_id, "tip": "aktivna"},
+        {"$set": {"tip": "prethodna"}}
+    )
+    membership = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "naziv": data.naziv,
+        "package_id": data.package_id,
+        "tip": "aktivna",
+        "preostali_termini": data.termini,
+        "ukupni_termini": data.termini,
+        "cijena": data.cijena,
+        "datum_pocetka": now.isoformat(),
+        "datum_isteka": (now + timedelta(days=data.trajanje_dana)).isoformat(),
+        "created_by": admin_user.get("name", "Admin"),
+        "created_at": now.isoformat()
+    }
+    await db.memberships.insert_one(membership)
+    # Notify user
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "type": "package_approved",
+        "title": "Paket aktiviran",
+        "message": f"Vaš paket {data.naziv} je aktiviran! Imate {data.termini} termina na raspolaganju.",
+        "data": {"package_name": data.naziv},
+        "read": False,
+        "created_at": now.isoformat()
+    })
+    return {"success": True, "message": f"Članarina '{data.naziv}' ({data.termini} termina) je kreirana za {user_doc.get('name', 'korisnika')}."}
+
+# ============== ADMIN PACKAGE HISTORY ==============
+
+@api_router.get("/admin/users/{user_id}/membership-history")
+async def admin_get_membership_history(user_id: str, request: Request):
+    """Get full membership history for a user"""
+    await get_admin_user(request)
+    memberships = await db.memberships.find(
+        {"user_id": user_id}, {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    # Also get package requests
+    requests = await db.package_requests.find(
+        {"user_id": user_id}, {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    return {"memberships": memberships, "requests": requests}
+
+# ============== ADMIN PACKAGES CRUD ==============
+
+@api_router.get("/admin/packages")
+async def admin_get_packages(request: Request):
+    """Get all packages (including inactive)"""
+    await get_admin_user(request)
+    packages = await db.packages.find({}, {"_id": 0}).sort("cijena", 1).to_list(50)
+    return packages
+
+@api_router.post("/admin/packages")
+async def admin_create_package(data: PackageCreateRequest, request: Request):
+    """Create a new package"""
+    await get_admin_user(request)
+    pkg_id = f"pkg_{data.naziv.lower().replace(' ', '_')}"
+    existing = await db.packages.find_one({"id": pkg_id})
+    if existing:
+        raise HTTPException(status_code=400, detail="Paket sa ovim nazivom već postoji")
+    package = {
+        "id": pkg_id,
+        "naziv": data.naziv,
+        "opis": data.opis,
+        "cijena": data.cijena,
+        "valuta": "KM",
+        "termini": data.termini,
+        "trajanje_dana": data.trajanje_dana,
+        "popular": data.popular,
+        "active": data.active,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.packages.insert_one(package)
+    return {"success": True, "message": f"Paket '{data.naziv}' je kreiran.", "package": {k: v for k, v in package.items() if k != "_id"}}
+
+@api_router.put("/admin/packages/{package_id}")
+async def admin_update_package(package_id: str, data: PackageCreateRequest, request: Request):
+    """Update a package"""
+    await get_admin_user(request)
+    result = await db.packages.update_one(
+        {"id": package_id},
+        {"$set": {
+            "naziv": data.naziv, "opis": data.opis, "cijena": data.cijena,
+            "termini": data.termini, "trajanje_dana": data.trajanje_dana,
+            "popular": data.popular, "active": data.active
+        }}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Paket nije pronađen")
+    return {"success": True, "message": f"Paket '{data.naziv}' je ažuriran."}
+
+@api_router.delete("/admin/packages/{package_id}")
+async def admin_delete_package(package_id: str, request: Request):
+    """Soft-delete a package (mark inactive)"""
+    await get_admin_user(request)
+    result = await db.packages.update_one({"id": package_id}, {"$set": {"active": False}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Paket nije pronađen")
+    return {"success": True, "message": "Paket je deaktiviran."}
+
+# ============== ADMIN REVENUE ARCHIVE ==============
+
+@api_router.post("/admin/revenue/archive")
+async def admin_archive_month(request: Request):
+    """Archive a month's revenue data"""
+    await get_admin_user(request)
+    body = await request.json()
+    month_str = body.get("month")
+    if not month_str:
+        raise HTTPException(status_code=400, detail="Mjesec je obavezan (format: YYYY-MM)")
+    # Calculate revenue for that month
+    month_requests = await db.package_requests.find(
+        {"status": "approved", "approved_at": {"$regex": f"^{month_str}"}},
+        {"_id": 0}
+    ).to_list(1000)
+    pkg_rev = sum(r.get("package_price", 0) for r in month_requests)
+    month_manual = await db.manual_income.find(
+        {"datum": {"$regex": f"^{month_str}"}},
+        {"_id": 0}
+    ).to_list(1000)
+    manual_rev = sum(m.get("iznos", 0) for m in month_manual)
+    archive_entry = {
+        "month": month_str,
+        "revenue": pkg_rev + manual_rev,
+        "pkg_revenue": pkg_rev,
+        "manual_revenue": manual_rev,
+        "count": len(month_requests),
+        "archived_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.revenue_archive.update_one(
+        {"month": month_str}, {"$set": archive_entry}, upsert=True
+    )
+    return {"success": True, "message": f"Prihod za {month_str} je arhiviran.", "data": archive_entry}
 
 # ============== ADMIN EXPIRY ALERTS ==============
 
@@ -2016,6 +2246,23 @@ async def check_inactivity_reminders():
 
 # ============== SEED DATA ==============
 
+async def seed_packages():
+    """Seed default packages if empty"""
+    count = await db.packages.count_documents({})
+    if count > 0:
+        return
+    default_packages = [
+        {"id": "pkg_basic", "naziv": "Basic", "opis": "Mala grupa do 3 osobe", "cijena": 90, "valuta": "KM", "termini": 6, "trajanje_dana": 30, "popular": False, "active": True},
+        {"id": "pkg_active", "naziv": "Linea Active", "opis": "Mala grupa do 3 osobe", "cijena": 125, "valuta": "KM", "termini": 8, "trajanje_dana": 30, "popular": False, "active": True},
+        {"id": "pkg_balance", "naziv": "Linea Balance", "opis": "Mala grupa do 3 osobe", "cijena": 145, "valuta": "KM", "termini": 10, "trajanje_dana": 30, "popular": True, "active": True},
+        {"id": "pkg_gold", "naziv": "Linea Gold", "opis": "Mala grupa do 3 osobe", "cijena": 175, "valuta": "KM", "termini": 12, "trajanje_dana": 30, "popular": False, "active": True},
+        {"id": "pkg_premium", "naziv": "Linea Premium", "opis": "Mala grupa do 3 osobe", "cijena": 200, "valuta": "KM", "termini": 16, "trajanje_dana": 30, "popular": False, "active": True},
+    ]
+    for pkg in default_packages:
+        pkg["created_at"] = datetime.now(timezone.utc).isoformat()
+    await db.packages.insert_many(default_packages)
+    logger.info(f"Seeded {len(default_packages)} packages")
+
 async def seed_admin():
     """Create admin users in the regular users collection"""
     admin_phones = ["+38766024148"]
@@ -2084,6 +2331,7 @@ async def seed_schedule():
 
 @app.on_event("startup")
 async def startup():
+    await seed_packages()
     await seed_admin()
     await seed_schedule()
     # Start notification scheduler - runs every hour

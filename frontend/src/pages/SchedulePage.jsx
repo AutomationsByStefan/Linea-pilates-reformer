@@ -62,6 +62,11 @@ const SchedulePage = () => {
   const dayNames = ['Pon', 'Uto', 'Sri', 'Čet', 'Pet', 'Sub', 'Ned'];
   const dayNamesLong = ['Nedjelja', 'Ponedjeljak', 'Utorak', 'Srijeda', 'Četvrtak', 'Petak', 'Subota'];
 
+  // 10-day limit: only show dates from today through today+9
+  const maxDate = new Date();
+  maxDate.setDate(maxDate.getDate() + 9);
+  maxDate.setHours(23, 59, 59, 999);
+
   const getDaysInMonth = (date) => {
     const year = date.getFullYear();
     const month = date.getMonth();
@@ -86,6 +91,13 @@ const SchedulePage = () => {
     const d = new Date(date);
     d.setHours(0, 0, 0, 0);
     return d < today; // Today is NOT past
+  };
+
+  const isBeyondLimit = (date) => {
+    if (!date) return false;
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d > maxDate;
   };
 
   const hasSlots = (date) => {
@@ -308,25 +320,30 @@ const SchedulePage = () => {
         </div>
 
         <div className="grid grid-cols-7 gap-0.5">
-          {calendarDays.map((date, index) => (
+          {calendarDays.map((date, index) => {
+            const past = isPast(date);
+            const beyond = isBeyondLimit(date);
+            const disabled = !date || past || beyond;
+            return (
             <button
               key={index}
-              onClick={() => date && !isPast(date) && setSelectedDate(date)}
-              disabled={!date || isPast(date)}
+              onClick={() => date && !disabled && setSelectedDate(date)}
+              disabled={disabled}
               className={`
                 aspect-square flex items-center justify-center text-xs rounded-lg transition-all duration-200
                 ${!date ? 'invisible' : ''}
-                ${isPast(date) ? 'text-muted-foreground/40 cursor-not-allowed' : ''}
+                ${disabled && date ? 'text-muted-foreground/40 cursor-not-allowed' : ''}
                 ${isSelected(date) ? 'gradient-gold text-white font-semibold' : ''}
                 ${isToday(date) && !isSelected(date) ? 'ring-1.5 ring-primary ring-inset font-semibold' : ''}
-                ${!isPast(date) && !isSelected(date) && hasSlots(date) ? 'hover:bg-secondary cursor-pointer' : ''}
-                ${!isPast(date) && !isSelected(date) ? 'text-foreground' : ''}
+                ${!disabled && !isSelected(date) && hasSlots(date) ? 'hover:bg-secondary cursor-pointer' : ''}
+                ${!disabled && !isSelected(date) ? 'text-foreground' : ''}
               `}
               data-testid={date ? `calendar-day-${date.getDate()}` : undefined}
             >
               {date?.getDate()}
             </button>
-          ))}
+            );
+          })}
         </div>
       </div>
 
