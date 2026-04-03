@@ -6,7 +6,6 @@ import { Toaster } from "@/components/ui/sonner";
 // Pages
 import LoginPage from "@/pages/LoginPage";
 import RegisterPage from "@/pages/RegisterPage";
-import OTPPage from "@/pages/OTPPage";
 import TermsPage from "@/pages/TermsPage";
 import PrivacyPage from "@/pages/PrivacyPage";
 import HomePage from "@/pages/HomePage";
@@ -52,9 +51,6 @@ const ProtectedRoute = ({ children }) => {
       const u = location.state.user;
       setUser(u);
       setIsAuthenticated(true);
-      if (u.is_admin) {
-        navigate('/admin');
-      }
       return;
     }
 
@@ -69,10 +65,6 @@ const ProtectedRoute = ({ children }) => {
         const userData = await response.json();
         setUser(userData);
         setIsAuthenticated(true);
-        if (userData.is_admin && !location.pathname.startsWith('/admin')) {
-          navigate('/admin');
-          return;
-        }
       } catch (error) {
         setIsAuthenticated(false);
         navigate('/login');
@@ -118,7 +110,6 @@ function AppRouter() {
       {/* Public routes */}
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
-      <Route path="/otp" element={<OTPPage />} />
       <Route path="/uslovi-koristenja" element={<TermsPage />} />
       <Route path="/politika-privatnosti" element={<PrivacyPage />} />
       <Route path="/pozivnica/:inviteId" element={<InvitePage />} />

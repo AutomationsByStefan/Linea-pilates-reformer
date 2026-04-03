@@ -1,183 +1,114 @@
 import React, { useState } from 'react';
-import { useNavigate, useLocation, Link } from 'react-router-dom';
-import { Input } from '@/components/ui/input';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
+import { User, Mail, Lock } from 'lucide-react';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+var API = process.env.REACT_APP_BACKEND_URL + '/api';
 
-const RegisterPage = () => {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const initialPhone = location.state?.phone || '';
-
-  const [formData, setFormData] = useState({
-    phone: initialPhone,
-    ime: '',
-    prezime: '',
-    email: ''
-  });
+function RegisterPage() {
+  var navigate = useNavigate();
+  var location = useLocation();
+  var phone = (location.state && location.state.phone) || '';
+  const [ime, setIme] = useState('');
+  const [prezime, setPrezime] = useState('');
+  const [email, setEmail] = useState('');
+  const [pin, setPin] = useState('');
+  const [pinConfirm, setPinConfirm] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleChange = (e) => {
-    setFormData(prev => ({
-      ...prev,
-      [e.target.name]: e.target.value
-    }));
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-
-    if (!formData.phone || !formData.ime || !formData.prezime || !formData.email) {
-      toast.error('Sva polja su obavezna');
-      return;
-    }
-
-    if (!formData.email.includes('@')) {
-      toast.error('Unesite ispravnu email adresu');
-      return;
-    }
+  function handleRegister() {
+    if (!ime || !prezime) { toast.error('Unesite ime i prezime'); return; }
+    if (!pin || pin.length !== 4) { toast.error('PIN mora biti 4 cifre'); return; }
+    if (pin !== pinConfirm) { toast.error('PIN-ovi se ne podudaraju'); return; }
+    if (!phone) { toast.error('Broj telefona nije postavljen'); navigate('/login'); return; }
 
     setLoading(true);
-    try {
-      const response = await fetch(`${API}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(formData)
-      });
+    fetch(API + '/auth/register', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: phone, ime: ime, prezime: prezime, email: email, pin: pin })
+    }).then(function(r) {
+      if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail); });
+      return r.json();
+    }).then(function(user) {
+      toast.success('Registracija uspjesna! Dobrodosli.');
+      window.location.href = '/';
+    }).catch(function(e) { toast.error(e.message || 'Greska pri registraciji'); })
+      .finally(function() { setLoading(false); });
+  }
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Greška pri registraciji');
-      }
-
-      const userData = await response.json();
-      toast.success('Nalog je uspješno kreiran!');
-      navigate('/', { state: { user: userData }, replace: true });
-    } catch (error) {
-      toast.error(error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  function handleKeyDown(e) {
+    if (e.key === 'Enter') handleRegister();
+  }
 
   return (
-    <div className="mobile-container min-h-screen flex flex-col bg-background" data-testid="register-page">
-      {/* Header */}
-      <header className="flex items-center px-6 py-4">
-        <button
-          onClick={() => navigate(-1)}
-          className="p-2 -ml-2 hover:bg-muted rounded-full transition-colors"
-          data-testid="back-btn"
-        >
-          <ArrowLeft className="w-6 h-6 text-foreground" strokeWidth={1.5} />
-        </button>
-      </header>
-
-      {/* Content */}
-      <div className="flex-1 px-8 pb-12">
-        {/* Title */}
-        <div className="mb-8 animate-fade-in">
-          <h1 className="font-heading text-3xl text-foreground mb-2">
-            Kreiraj nalog
-          </h1>
-          <p className="text-muted-foreground">
-            Unesite svoje podatke za registraciju
-          </p>
+    <div className="min-h-screen bg-[#FDFCF8] flex flex-col" data-testid="register-page">
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-8">
+        <div className="mb-6">
+          <img src="/logo.png" alt="Linea Pilates" className="h-20 w-auto mix-blend-multiply" />
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="animate-slide-up delay-100">
-            <label className="text-sm font-medium text-foreground mb-2 block">
-              Broj telefona
-            </label>
-            <Input
-              type="tel"
-              name="phone"
-              placeholder="+387 61 123 456"
-              value={formData.phone}
-              onChange={handleChange}
-              className="input-linea w-full h-14"
-              data-testid="register-phone-input"
-            />
+        <div className="w-full max-w-sm space-y-5">
+          <div className="text-center mb-2">
+            <h1 className="text-xl font-semibold text-[#2C2C2C]">Kreirajte nalog</h1>
+            <p className="text-sm text-[#8B8680] mt-1">{phone}</p>
           </div>
 
-          <div className="animate-slide-up delay-200">
-            <label className="text-sm font-medium text-foreground mb-2 block">
-              Ime
-            </label>
-            <Input
-              type="text"
-              name="ime"
-              placeholder="Vaše ime"
-              value={formData.ime}
-              onChange={handleChange}
-              className="input-linea w-full h-14"
-              data-testid="register-ime-input"
-            />
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="relative">
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8B8680]" />
+                <Input value={ime} onChange={function(e) { setIme(e.target.value); }}
+                  placeholder="Ime" className="h-12 pl-10 rounded-xl border-[#E8E2D8] bg-white text-[#2C2C2C] placeholder:text-[#C4BFBA]" data-testid="register-ime" />
+              </div>
+              <div className="relative">
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8B8680]" />
+                <Input value={prezime} onChange={function(e) { setPrezime(e.target.value); }}
+                  placeholder="Prezime" className="h-12 pl-10 rounded-xl border-[#E8E2D8] bg-white text-[#2C2C2C] placeholder:text-[#C4BFBA]" data-testid="register-prezime" />
+              </div>
+            </div>
+
+            <div className="relative">
+              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8B8680]" />
+              <Input type="email" value={email} onChange={function(e) { setEmail(e.target.value); }}
+                placeholder="Email (opcionalno)" className="h-12 pl-10 rounded-xl border-[#E8E2D8] bg-white text-[#2C2C2C] placeholder:text-[#C4BFBA]" data-testid="register-email" />
+            </div>
+
+            <div className="pt-2">
+              <p className="text-xs text-[#8B8680] mb-2">Postavite 4-cifreni PIN za prijavu</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8B8680]" />
+                  <Input type="password" value={pin} maxLength={4} inputMode="numeric"
+                    onChange={function(e) { setPin(e.target.value.replace(/\D/g, '').slice(0, 4)); }}
+                    placeholder="PIN" className="h-12 pl-10 rounded-xl border-[#E8E2D8] bg-white text-[#2C2C2C] text-center tracking-[0.3em] placeholder:text-[#C4BFBA] placeholder:tracking-normal" data-testid="register-pin" />
+                </div>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8B8680]" />
+                  <Input type="password" value={pinConfirm} maxLength={4} inputMode="numeric"
+                    onChange={function(e) { setPinConfirm(e.target.value.replace(/\D/g, '').slice(0, 4)); }}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Potvrdi" className="h-12 pl-10 rounded-xl border-[#E8E2D8] bg-white text-[#2C2C2C] text-center tracking-[0.3em] placeholder:text-[#C4BFBA] placeholder:tracking-normal" data-testid="register-pin-confirm" />
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div className="animate-slide-up delay-300">
-            <label className="text-sm font-medium text-foreground mb-2 block">
-              Prezime
-            </label>
-            <Input
-              type="text"
-              name="prezime"
-              placeholder="Vaše prezime"
-              value={formData.prezime}
-              onChange={handleChange}
-              className="input-linea w-full h-14"
-              data-testid="register-prezime-input"
-            />
-          </div>
+          <Button onClick={handleRegister} disabled={loading}
+            className="w-full h-12 rounded-xl bg-[#C4A574] hover:bg-[#A68B5B] text-white font-medium" data-testid="register-submit-btn">
+            {loading ? 'Kreiranje...' : 'Kreiraj nalog'}
+          </Button>
 
-          <div className="animate-slide-up delay-400">
-            <label className="text-sm font-medium text-foreground mb-2 block">
-              Email adresa
-            </label>
-            <Input
-              type="email"
-              name="email"
-              placeholder="vasa@email.com"
-              value={formData.email}
-              onChange={handleChange}
-              className="input-linea w-full h-14"
-              data-testid="register-email-input"
-            />
-          </div>
-
-          <div className="pt-4 animate-slide-up delay-500">
-            <Button
-              type="submit"
-              disabled={loading}
-              className="btn-primary w-full h-14 text-lg"
-              data-testid="register-submit-btn"
-            >
-              {loading ? 'Kreiranje...' : 'Kreiraj nalog'}
-            </Button>
-          </div>
-        </form>
-
-        {/* Terms */}
-        <p className="text-center text-sm text-muted-foreground mt-6 animate-slide-up delay-500">
-          Registracijom prihvatate naše{' '}
-          <Link to="/uslovi-koristenja" className="text-primary hover:underline">
-            Uslove korištenja
-          </Link>
-          {' '}i{' '}
-          <Link to="/politika-privatnosti" className="text-primary hover:underline">
-            Politiku privatnosti
-          </Link>
-        </p>
+          <button onClick={function() { navigate('/login'); }} className="w-full text-center text-sm text-[#8B8680] hover:text-[#C4A574]">
+            Nazad na prijavu
+          </button>
+        </div>
       </div>
     </div>
   );
-};
+}
 
 export default RegisterPage;

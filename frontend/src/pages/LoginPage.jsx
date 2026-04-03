@@ -1,194 +1,204 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { Input } from '@/components/ui/input';
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
+import { ChevronDown, Lock, Phone } from 'lucide-react';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+var API = process.env.REACT_APP_BACKEND_URL + '/api';
 
-// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+var COUNTRY_CODES = [
+  { code: '+387', label: 'BiH +387', placeholder: '61 234 567' },
+  { code: '+385', label: 'HR +385', placeholder: '91 234 5678' },
+  { code: '+381', label: 'SRB +381', placeholder: '60 123 4567' },
+  { code: '+382', label: 'MNE +382', placeholder: '67 123 456' },
+  { code: '+386', label: 'SLO +386', placeholder: '40 123 456' },
+  { code: '+43', label: 'AT +43', placeholder: '660 123 456' },
+  { code: '+49', label: 'DE +49', placeholder: '170 123 4567' },
+];
 
-const LoginPage = () => {
-  const navigate = useNavigate();
-  const [phone, setPhone] = useState('');
+function LoginPage() {
+  const [step, setStep] = useState('phone');
+  const [countryCode, setCountryCode] = useState('+387');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [pin, setPin] = useState('');
+  const [userName, setUserName] = useState('');
   const [loading, setLoading] = useState(false);
-  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [showCodes, setShowCodes] = useState(false);
+  var navigate = useNavigate();
 
-  // Check if already authenticated
-  useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const response = await fetch(`${API}/auth/me`, {
-          credentials: 'include'
-        });
-        if (response.ok) {
-          navigate('/');
-          return;
-        }
-      } catch (error) {
-        // Not authenticated, show login
-      }
-      setCheckingAuth(false);
-    };
-    checkAuth();
-  }, [navigate]);
+  var selectedCountry = COUNTRY_CODES.find(function(c) { return c.code === countryCode; }) || COUNTRY_CODES[0];
 
-  const handleGoogleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + '/';
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-  };
+  function getFullPhone() {
+    var cleaned = phoneNumber.replace(/\s/g, '');
+    return countryCode + cleaned;
+  }
 
-  const handlePhoneSubmit = async (e) => {
-    e.preventDefault();
-    
-    if (!phone || phone.length < 9) {
+  function handleCheckPhone() {
+    if (!phoneNumber || phoneNumber.replace(/\s/g, '').length < 6) {
       toast.error('Unesite ispravan broj telefona');
       return;
     }
-
     setLoading(true);
-    try {
-      const response = await fetch(`${API}/auth/phone/send-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone })
-      });
+    var fullPhone = getFullPhone();
+    fetch(API + '/auth/phone/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: fullPhone })
+    }).then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.exists) {
+          setUserName(data.name);
+          setStep('pin');
+        } else {
+          navigate('/register', { state: { phone: fullPhone, countryCode: countryCode } });
+        }
+      })
+      .catch(function() { toast.error('Greska pri provjeri broja'); })
+      .finally(function() { setLoading(false); });
+  }
 
-      const data = await response.json();
-
-      if (data.user_exists) {
-        // User exists, go to OTP page
-        toast.success('OTP kod je poslan');
-        navigate('/otp', { state: { phone } });
-      } else {
-        // User doesn't exist, go to registration
-        toast.info('Potrebna je registracija');
-        navigate('/register', { state: { phone } });
-      }
-    } catch (error) {
-      toast.error('Došlo je do greške');
-    } finally {
-      setLoading(false);
+  function handleLogin() {
+    if (!pin || pin.length !== 4) {
+      toast.error('PIN mora biti 4 cifre');
+      return;
     }
-  };
+    setLoading(true);
+    fetch(API + '/auth/phone/login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: getFullPhone(), pin: pin })
+    }).then(function(r) {
+      if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail); });
+      return r.json();
+    }).then(function(user) {
+      toast.success('Dobrodosli, ' + (user.name || ''));
+      window.location.href = '/';
+    }).catch(function(e) { toast.error(e.message || 'Neispravan PIN'); })
+      .finally(function() { setLoading(false); });
+  }
 
-  if (checkingAuth) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="animate-pulse">
-          <img 
-            src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/jp1fkri2_Untitled%20design%20%285%29.png"
-            alt="Linea"
-            className="w-32 h-32 object-contain rounded-2xl"
-          />
-        </div>
-      </div>
-    );
+  function handleKeyDown(e) {
+    if (e.key === 'Enter') {
+      if (step === 'phone') handleCheckPhone();
+      else if (step === 'pin') handleLogin();
+    }
   }
 
   return (
-    <div className="mobile-container min-h-screen flex flex-col bg-background" data-testid="login-page">
-      {/* Logo Section */}
-      <div className="flex items-center justify-center pt-6 animate-fade-in bg-[#FDFCF8]">
-        <img 
-          src="https://customer-assets.emergentagent.com/job_pilates-hub-12/artifacts/jp1fkri2_Untitled%20design%20%285%29.png"
-          alt="Linea Reformer Pilates"
-          className="w-64 h-64 object-contain mix-blend-multiply"
-          data-testid="login-logo"
-        />
-      </div>
-      
-      {/* Content Section */}
-      <div className="flex-1 flex flex-col px-8 pt-0 pb-6">
-        {/* Welcome text */}
-        <div className="text-center mb-5 animate-slide-up">
-          <h1 className="font-heading text-3xl text-foreground">Dobrodošli</h1>
-          <p className="text-muted-foreground mt-2 text-base">
-            Prijavite se na svoj nalog
-          </p>
+    <div className="min-h-screen bg-[#FDFCF8] flex flex-col" data-testid="login-page">
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-8">
+        {/* Logo */}
+        <div className="mb-8">
+          <img src="/logo.png" alt="Linea Pilates" className="h-28 w-auto mix-blend-multiply" />
         </div>
 
-        {/* Login Form */}
-        <form onSubmit={handlePhoneSubmit} className="space-y-3 animate-slide-up delay-100">
-          <Input
-            type="tel"
-            placeholder="Broj telefona"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            className="input-linea w-full h-12 text-base"
-            data-testid="phone-input"
-          />
+        <div className="w-full max-w-sm">
+          {step === 'phone' && (
+            <div className="space-y-5" data-testid="phone-step">
+              <div className="text-center mb-2">
+                <h1 className="text-xl font-semibold text-[#2C2C2C]">Dobrodosli</h1>
+                <p className="text-sm text-[#8B8680] mt-1">Unesite broj telefona za prijavu</p>
+              </div>
 
-          <Button
-            type="submit"
-            disabled={loading}
-            className="btn-primary w-full h-12 text-base"
-            data-testid="continue-btn"
-          >
-            {loading ? 'Učitavanje...' : 'Nastavi'}
-          </Button>
-        </form>
+              <div className="flex gap-2">
+                {/* Country code dropdown */}
+                <div className="relative">
+                  <button
+                    onClick={function() { setShowCodes(!showCodes); }}
+                    className="h-12 px-3 rounded-xl border border-[#E8E2D8] bg-white flex items-center gap-1 text-sm text-[#2C2C2C] min-w-[100px]"
+                    data-testid="country-code-btn"
+                  >
+                    <span className="font-medium">{countryCode}</span>
+                    <ChevronDown className="w-3 h-3 text-[#8B8680]" />
+                  </button>
+                  {showCodes && (
+                    <div className="absolute top-full left-0 mt-1 bg-white border border-[#E8E2D8] rounded-xl shadow-lg z-50 w-48 max-h-48 overflow-y-auto" data-testid="country-code-dropdown">
+                      {COUNTRY_CODES.map(function(c) {
+                        return (
+                          <button key={c.code} onClick={function() { setCountryCode(c.code); setShowCodes(false); }}
+                            className={'w-full text-left px-4 py-2.5 text-sm hover:bg-[#F5F0E8] ' + (c.code === countryCode ? 'bg-[#F5F0E8] font-medium' : '')}>
+                            {c.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
 
-        {/* Divider */}
-        <div className="flex items-center my-4 animate-slide-up delay-200">
-          <div className="flex-1 h-px bg-border" />
-          <span className="px-4 text-sm text-muted-foreground">ili</span>
-          <div className="flex-1 h-px bg-border" />
+                {/* Phone number */}
+                <div className="flex-1 relative">
+                  <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8B8680]" />
+                  <Input
+                    type="tel"
+                    value={phoneNumber}
+                    onChange={function(e) { setPhoneNumber(e.target.value); }}
+                    onKeyDown={handleKeyDown}
+                    placeholder={selectedCountry.placeholder}
+                    className="h-12 pl-10 rounded-xl border-[#E8E2D8] bg-white text-[#2C2C2C] placeholder:text-[#C4BFBA] text-sm"
+                    data-testid="phone-input"
+                  />
+                </div>
+              </div>
+
+              <Button
+                onClick={handleCheckPhone}
+                disabled={loading || !phoneNumber}
+                className="w-full h-12 rounded-xl bg-[#C4A574] hover:bg-[#A68B5B] text-white font-medium"
+                data-testid="continue-btn"
+              >
+                {loading ? 'Provjera...' : 'Nastavi'}
+              </Button>
+            </div>
+          )}
+
+          {step === 'pin' && (
+            <div className="space-y-5" data-testid="pin-step">
+              <div className="text-center mb-2">
+                <h1 className="text-xl font-semibold text-[#2C2C2C]">
+                  {userName ? 'Zdravo, ' + userName : 'Unesite PIN'}
+                </h1>
+                <p className="text-sm text-[#8B8680] mt-1">Unesite vas 4-cifreni PIN</p>
+              </div>
+
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8B8680]" />
+                <Input
+                  type="password"
+                  value={pin}
+                  onChange={function(e) { var v = e.target.value.replace(/\D/g, '').slice(0, 4); setPin(v); }}
+                  onKeyDown={handleKeyDown}
+                  placeholder="* * * *"
+                  maxLength={4}
+                  inputMode="numeric"
+                  className="h-12 pl-10 rounded-xl border-[#E8E2D8] bg-white text-[#2C2C2C] text-center text-lg tracking-[0.5em] placeholder:text-[#C4BFBA] placeholder:tracking-[0.3em]"
+                  data-testid="pin-input"
+                  autoFocus
+                />
+              </div>
+
+              <Button
+                onClick={handleLogin}
+                disabled={loading || pin.length !== 4}
+                className="w-full h-12 rounded-xl bg-[#C4A574] hover:bg-[#A68B5B] text-white font-medium"
+                data-testid="login-btn"
+              >
+                {loading ? 'Prijava...' : 'Prijavi se'}
+              </Button>
+
+              <button
+                onClick={function() { setStep('phone'); setPin(''); }}
+                className="w-full text-center text-sm text-[#8B8680] hover:text-[#C4A574]"
+              >
+                Nazad
+              </button>
+            </div>
+          )}
         </div>
-
-        {/* Google Login */}
-        <Button
-          type="button"
-          onClick={handleGoogleLogin}
-          variant="outline"
-          className="w-full h-12 text-base border-2 border-primary text-primary hover:bg-primary/5 rounded-full animate-slide-up delay-300"
-          data-testid="google-login-btn"
-        >
-          <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24">
-            <path
-              fill="currentColor"
-              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-            />
-            <path
-              fill="currentColor"
-              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-            />
-            <path
-              fill="currentColor"
-              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-            />
-            <path
-              fill="currentColor"
-              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-            />
-          </svg>
-          Nastavi s Google nalogom
-        </Button>
-
-        {/* Terms */}
-        <p className="text-center text-xs text-muted-foreground mt-6 animate-slide-up delay-400">
-          Registracijom prihvatate naše{' '}
-          <Link 
-            to="/uslovi-koristenja" 
-            className="text-primary hover:underline"
-            data-testid="terms-link"
-          >
-            Uslove korištenja
-          </Link>
-          {' '}i{' '}
-          <Link 
-            to="/politika-privatnosti" 
-            className="text-primary hover:underline"
-            data-testid="privacy-link"
-          >
-            Politiku privatnosti
-          </Link>
-        </p>
       </div>
     </div>
   );
-};
+}
 
 export default LoginPage;

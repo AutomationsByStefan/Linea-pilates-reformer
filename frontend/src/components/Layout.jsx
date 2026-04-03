@@ -1,10 +1,11 @@
 import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Home, CalendarDays, CreditCard, User } from 'lucide-react';
+import { Home, CalendarDays, CreditCard, User, Settings } from 'lucide-react';
 
 const Layout = ({ children, user, hideNav = false }) => {
   const location = useLocation();
   const navigate = useNavigate();
+  const isAdmin = user && user.is_admin;
 
   const navItems = [
     { path: '/', label: 'Početna', icon: Home },
@@ -20,6 +21,20 @@ const Layout = ({ children, user, hideNav = false }) => {
 
   return (
     <div className="mobile-container" data-testid="app-layout">
+      {/* Admin Panel Button */}
+      {isAdmin && (
+        <div className="fixed top-3 right-3 z-50">
+          <button
+            onClick={() => navigate('/admin')}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#2C2C2C] text-white text-xs font-medium shadow-lg hover:bg-[#1a1a1a] transition-colors"
+            data-testid="admin-panel-btn"
+          >
+            <Settings className="w-3.5 h-3.5" />
+            Admin Panel
+          </button>
+        </div>
+      )}
+
       {/* Main content */}
       <main className={`min-h-screen ${!hideNav ? 'safe-bottom' : 'pb-6'}`}>
         {children}

@@ -50,15 +50,16 @@ class UserSession(BaseModel):
 class PhoneAuthRequest(BaseModel):
     phone: str
 
-class PhoneVerifyRequest(BaseModel):
+class PhoneLoginRequest(BaseModel):
     phone: str
-    otp: str
+    pin: str
 
 class RegisterRequest(BaseModel):
     phone: str
     ime: str
     prezime: str
     email: str
+    pin: str
 
 class Membership(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -356,7 +357,7 @@ async def create_session(request: Request, response: Response):
 async def get_me(request: Request):
     """Get current authenticated user"""
     user = await get_current_user(request)
-    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0, "pin_hash": 0})
     await db.users.update_one(
         {"user_id": user.user_id},
         {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
@@ -375,97 +376,81 @@ async def logout(request: Request, response: Response):
     
     return {"message": "Uspješno ste se odjavili"}
 
-# ============== PHONE AUTH (MOCK) ==============
+# ============== PHONE AUTH (PIN-BASED) ==============
+
+@api_router.post("/auth/phone/check")
+async def check_phone(data: PhoneAuthRequest):
+    """Check if phone number exists in the system"""
+    existing_user = await db.users.find_one({"phone": data.phone}, {"_id": 0})
+    return {
+        "exists": existing_user is not None,
+        "name": existing_user.get("name", "") if existing_user else ""
+    }
 
 @api_router.post("/auth/phone/send-otp")
-async def send_otp(data: PhoneAuthRequest):
-    """Mock: Send OTP to phone number"""
-    # Check if user exists with this phone
+async def send_otp_compat(data: PhoneAuthRequest):
+    """Backward compatible: check phone exists"""
     existing_user = await db.users.find_one({"phone": data.phone}, {"_id": 0})
-    
-    # Store OTP (mock - always 123456)
-    await db.otp_codes.delete_many({"phone": data.phone})
-    await db.otp_codes.insert_one({
-        "phone": data.phone,
-        "otp": "123456",  # Mock OTP
-        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
-        "created_at": datetime.now(timezone.utc).isoformat()
-    })
-    
     return {
         "success": True,
         "user_exists": existing_user is not None,
-        "message": "OTP kod je poslan" if existing_user else "Korisnik ne postoji, potrebna registracija"
+        "message": "Unesite PIN" if existing_user else "Potrebna registracija"
     }
 
-@api_router.post("/auth/phone/verify")
-async def verify_otp(data: PhoneVerifyRequest, response: Response):
-    """Mock: Verify OTP and login user"""
-    otp_doc = await db.otp_codes.find_one({"phone": data.phone}, {"_id": 0})
-    
-    if not otp_doc:
-        raise HTTPException(status_code=400, detail="OTP kod nije pronađen")
-    
-    if otp_doc["otp"] != data.otp:
-        raise HTTPException(status_code=400, detail="Neispravan OTP kod")
-    
-    # Check expiry
-    expires_at = datetime.fromisoformat(otp_doc["expires_at"])
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail="OTP kod je istekao")
-    
-    # Get or create user
-    user_doc = await db.users.find_one({"phone": data.phone}, {"_id": 0})
-    
+@api_router.post("/auth/phone/login")
+async def phone_login(data: PhoneLoginRequest, response: Response):
+    """Login with phone + 4-digit PIN"""
+    user_doc = await db.users.find_one({"phone": data.phone}, {"_id": 0, "pin_hash": 1, "user_id": 1})
     if not user_doc:
-        raise HTTPException(status_code=404, detail="Korisnik nije pronađen, potrebna registracija")
-    
-    # Update last activity
+        raise HTTPException(status_code=404, detail="Korisnik nije pronadjen")
+    pin_hash = user_doc.get("pin_hash")
+    if not pin_hash:
+        raise HTTPException(status_code=400, detail="PIN nije postavljen. Kontaktirajte studio.")
+    if not bcrypt.verify(data.pin, pin_hash):
+        raise HTTPException(status_code=400, detail="Neispravan PIN")
+    # Get full user doc without pin_hash
+    full_user = await db.users.find_one({"user_id": user_doc["user_id"]}, {"_id": 0, "pin_hash": 0})
     await db.users.update_one(
-        {"user_id": user_doc["user_id"]},
+        {"user_id": full_user["user_id"]},
         {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
     )
-    
     # Create session
     session_token = str(uuid.uuid4())
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-    
     session_doc = {
         "session_id": str(uuid.uuid4()),
-        "user_id": user_doc["user_id"],
+        "user_id": full_user["user_id"],
         "session_token": session_token,
         "expires_at": expires_at.isoformat(),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    
-    await db.user_sessions.delete_many({"user_id": user_doc["user_id"]})
+    await db.user_sessions.delete_many({"user_id": full_user["user_id"]})
     await db.user_sessions.insert_one(session_doc)
-    
-    # Delete used OTP
-    await db.otp_codes.delete_many({"phone": data.phone})
-    
-    # Set cookie
     response.set_cookie(
-        key="session_token",
-        value=session_token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=7 * 24 * 60 * 60,
-        path="/"
+        key="session_token", value=session_token,
+        httponly=True, secure=True, samesite="none",
+        max_age=7 * 24 * 60 * 60, path="/"
     )
-    
-    return user_doc
+    return full_user
+
+@api_router.post("/auth/phone/verify")
+async def verify_otp(data: PhoneLoginRequest, response: Response):
+    """Backward compat: same as login"""
+    return await phone_login(data, response)
 
 @api_router.post("/auth/register")
 async def register_user(data: RegisterRequest, response: Response):
-    """Register new user with phone"""
+    """Register new user with phone and 4-digit PIN"""
     # Check if phone already exists
     existing = await db.users.find_one({"phone": data.phone}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Korisnik sa ovim brojem već postoji")
+    
+    if not data.pin or len(data.pin) != 4 or not data.pin.isdigit():
+        raise HTTPException(status_code=400, detail="PIN mora biti 4 cifre")
+    
+    # Hash the PIN
+    pin_hash = bcrypt.hash(data.pin)
     
     # Create user
     user_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -479,6 +464,7 @@ async def register_user(data: RegisterRequest, response: Response):
         "is_admin": False,
         "status": "active",
         "notes": "",
+        "pin_hash": pin_hash,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "last_activity": datetime.now(timezone.utc).isoformat()
     }
@@ -2308,7 +2294,7 @@ async def seed_schedule():
         return
     now = datetime.now(timezone.utc)
     instructors = ["Ana Marić", "Maja Kovač", "Ivana Petrović"]
-    times = ["09:00", "10:00", "11:00", "12:00", "16:00", "17:00", "18:00", "19:00"]
+    times = ["08:00", "09:00", "10:00", "11:00", "17:00", "18:00", "19:00", "20:00"]
     slots = []
     for day_offset in range(30):
         date = now + timedelta(days=day_offset)
