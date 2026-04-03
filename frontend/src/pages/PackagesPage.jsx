@@ -81,7 +81,7 @@ const PackagesPage = () => {
           {packages.map((pkg) => (
             <div
               key={pkg.id}
-              className={`card-linea relative overflow-hidden transition-all ${pkg.popular ? 'ring-2 ring-primary' : ''} ${pkg.best_value ? 'ring-2 ring-emerald-500/60' : ''}`}
+              className={`card-linea relative overflow-hidden transition-all ${pkg.popular ? 'ring-2 ring-primary' : ''} ${pkg.best_value ? 'ring-2 ring-[#A68B5B]' : ''}`}
               data-testid="package-card"
             >
               {pkg.popular && (
@@ -90,7 +90,7 @@ const PackagesPage = () => {
                 </div>
               )}
               {pkg.best_value && (
-                <div className="absolute top-0 right-0 bg-emerald-600 text-white text-[10px] px-3 py-1 rounded-bl-xl font-medium">
+                <div className="absolute top-0 right-0 bg-[#A68B5B] text-white text-[10px] px-3 py-1 rounded-bl-xl font-medium">
                   Najisplativiji
                 </div>
               )}
