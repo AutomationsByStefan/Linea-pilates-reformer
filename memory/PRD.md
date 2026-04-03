@@ -27,7 +27,8 @@ Mobile-first web application for a Pilates Reformer Studio (Linea Pilates) with 
 2. System checks if phone exists → if not, redirect to registration
 3. If exists → prompt for 4-digit PIN
 4. On registration, user sets 4-digit PIN (stored hashed as pin_hash)
-5. Admin users (is_admin: true) see "Admin Panel" button on client app
+5. Google OAuth login also available (via Emergent Auth)
+6. Admin users (is_admin: true) see "Admin Panel" button on client app
 
 ## Packages (6 predefined)
 1. Pojedinacni: 25 KM, 1 termin
@@ -39,7 +40,9 @@ Mobile-first web application for a Pilates Reformer Studio (Linea Pilates) with 
 
 ## Completed Features
 - [x] Phone + PIN authentication (replaced OTP)
-- [x] Country code dropdown (default +387 BiH)
+- [x] Google OAuth login (Emergent-managed) - restored
+- [x] Country code dropdown with flags (159 countries, search, default +387 BiH)
+- [x] Logo on login and register pages
 - [x] Admin Panel button for admin users (visible on client app)
 - [x] Bottom navigation (Home, Schedule, Packages, Profile)
 - [x] Full-month calendar schedule with 10-day limit
