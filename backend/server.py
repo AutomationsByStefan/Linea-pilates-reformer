@@ -524,7 +524,7 @@ async def create_mock_data_for_user(user_id: str):
         "user_id": user_id,
         "datum": (now + timedelta(days=2)).isoformat(),
         "vrijeme": "10:00",
-        "instruktor": "Ana Marić",
+        "instruktor": "Marija Trisic",
         "tip": "predstojeći",
         "trajanje": 50,
         "feedback_submitted": False,
@@ -979,6 +979,28 @@ async def get_feedback_history(request: Request):
     ).sort("created_at", -1).to_list(50)
     
     return feedback
+
+# ============== TRAINING COMMENTS ==============
+
+class TrainingCommentRequest(BaseModel):
+    training_id: str
+    komentar: str
+
+@api_router.post("/trainings/comment")
+async def add_training_comment(data: TrainingCommentRequest, request: Request):
+    """Add a private comment to a past training"""
+    user = await get_current_user(request)
+    training = await db.trainings.find_one(
+        {"id": data.training_id, "user_id": user.user_id},
+        {"_id": 0}
+    )
+    if not training:
+        raise HTTPException(status_code=404, detail="Trening nije pronadjen")
+    await db.trainings.update_one(
+        {"id": data.training_id},
+        {"$set": {"komentar": data.komentar, "komentar_datum": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"success": True, "message": "Komentar je sačuvan"}
 
 # ============== WEIGHT TRACKING ==============
 
@@ -2116,8 +2138,8 @@ async def admin_generate_week(request: Request):
     body = await request.json()
     start_date_str = body.get("start_date")
     days_count = body.get("days", 7)
-    instructors = body.get("instructors", ["Ana Marić", "Maja Kovač", "Ivana Petrović"])
-    times = body.get("times", ["09:00", "10:00", "11:00", "12:00", "16:00", "17:00", "18:00", "19:00"])
+    instructors = body.get("instructors", ["Marija Trisic"])
+    times = body.get("times", ["08:00", "09:00", "10:00", "11:00", "17:00", "18:00", "19:00", "20:00"])
     spots = body.get("spots_per_slot", 3)
     if start_date_str:
         start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
@@ -2126,6 +2148,8 @@ async def admin_generate_week(request: Request):
     created = 0
     for day_offset in range(days_count):
         date = start_date + timedelta(days=day_offset)
+        if date.weekday() == 6:  # Skip Sunday (neradni dan)
+            continue
         date_str = date.strftime("%Y-%m-%d")
         for idx, time in enumerate(times):
             slot_id = f"slot_{date_str.replace('-', '')}_{time.replace(':', '')}"
@@ -2293,11 +2317,12 @@ async def seed_schedule():
     if count > 0:
         return
     now = datetime.now(timezone.utc)
-    instructors = ["Ana Marić", "Maja Kovač", "Ivana Petrović"]
     times = ["08:00", "09:00", "10:00", "11:00", "17:00", "18:00", "19:00", "20:00"]
     slots = []
     for day_offset in range(30):
         date = now + timedelta(days=day_offset)
+        if date.weekday() == 6:  # Skip Sunday (neradni dan)
+            continue
         date_str = date.strftime("%Y-%m-%d")
         for idx, time_str in enumerate(times):
             slot_id = f"slot_{date_str.replace('-', '')}_{time_str.replace(':', '')}"
@@ -2305,7 +2330,7 @@ async def seed_schedule():
                 "id": slot_id,
                 "datum": date_str,
                 "vrijeme": time_str,
-                "instruktor": instructors[(day_offset + idx) % 3],
+                "instruktor": "Marija Trisic",
                 "ukupno_mjesta": 3,
                 "trajanje": 50,
                 "created_at": now.isoformat()
@@ -2314,6 +2339,87 @@ async def seed_schedule():
         await db.schedule_slots.insert_many(slots)
         logger.info(f"Seeded {len(slots)} schedule slots")
 
+async def seed_studio_users():
+    """Seed/update studio admin users and fix instructor names"""
+    # Update existing admin +38766024148 → Linea Trebinje, PIN 2803
+    existing_main = await db.users.find_one({"phone": "+38766024148"})
+    if existing_main:
+        await db.users.update_one(
+            {"phone": "+38766024148"},
+            {"$set": {"name": "Linea Trebinje", "pin_hash": bcrypt.hash("2803"), "is_admin": True}}
+        )
+        logger.info("Updated admin +38766024148 -> Linea Trebinje, PIN 2803")
+    else:
+        await db.users.insert_one({
+            "user_id": f"user_{uuid.uuid4().hex[:12]}",
+            "phone": "+38766024148",
+            "name": "Linea Trebinje",
+            "email": "",
+            "is_admin": True,
+            "status": "active",
+            "notes": "",
+            "pin_hash": bcrypt.hash("2803"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_activity": datetime.now(timezone.utc).isoformat()
+        })
+        logger.info("Created admin +38766024148 -> Linea Trebinje")
+
+    # Admin Stefan +381640080404
+    existing_stefan = await db.users.find_one({"phone": "+381640080404"})
+    if not existing_stefan:
+        await db.users.insert_one({
+            "user_id": f"user_{uuid.uuid4().hex[:12]}",
+            "phone": "+381640080404",
+            "name": "Stefan",
+            "email": "",
+            "is_admin": True,
+            "status": "active",
+            "notes": "",
+            "pin_hash": bcrypt.hash("1234"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_activity": datetime.now(timezone.utc).isoformat()
+        })
+        logger.info("Created admin Stefan +381640080404")
+    else:
+        await db.users.update_one({"phone": "+381640080404"}, {"$set": {"is_admin": True, "name": "Stefan"}})
+
+    # Admin Nevena +381652344415
+    existing_nevena = await db.users.find_one({"phone": "+381652344415"})
+    if not existing_nevena:
+        await db.users.insert_one({
+            "user_id": f"user_{uuid.uuid4().hex[:12]}",
+            "phone": "+381652344415",
+            "name": "Nevena",
+            "email": "",
+            "is_admin": True,
+            "status": "active",
+            "notes": "",
+            "pin_hash": bcrypt.hash("1234"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_activity": datetime.now(timezone.utc).isoformat()
+        })
+        logger.info("Created admin Nevena +381652344415")
+    else:
+        await db.users.update_one({"phone": "+381652344415"}, {"$set": {"is_admin": True, "name": "Nevena"}})
+
+    # Fix all existing schedule slots and trainings to use Marija Trisic
+    await db.schedule_slots.update_many({}, {"$set": {"instruktor": "Marija Trisic"}})
+    await db.trainings.update_many({}, {"$set": {"instruktor": "Marija Trisic"}})
+    # Remove Sunday slots from schedule
+    all_slots = await db.schedule_slots.find({}, {"_id": 0, "id": 1, "datum": 1}).to_list(10000)
+    sunday_ids = []
+    for s in all_slots:
+        try:
+            d = datetime.strptime(s["datum"], "%Y-%m-%d")
+            if d.weekday() == 6:
+                sunday_ids.append(s["id"])
+        except Exception:
+            pass
+    if sunday_ids:
+        await db.schedule_slots.delete_many({"id": {"$in": sunday_ids}})
+        logger.info(f"Removed {len(sunday_ids)} Sunday schedule slots")
+    logger.info("Studio users and instructor data updated")
+
 # ============== STARTUP / SHUTDOWN ==============
 
 @app.on_event("startup")
@@ -2321,6 +2427,7 @@ async def startup():
     await seed_packages()
     await seed_admin()
     await seed_schedule()
+    await seed_studio_users()
     # Start notification scheduler - runs every hour
     scheduler.add_job(check_day_before_reminders, 'interval', hours=1, id='day_before')
     scheduler.add_job(check_inactivity_reminders, 'interval', hours=6, id='inactivity')

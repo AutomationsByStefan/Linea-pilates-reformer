@@ -15,7 +15,7 @@ const AdminSchedulePage = () => {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showGenerateDialog, setShowGenerateDialog] = useState(false);
   const [filterDate, setFilterDate] = useState('');
-  const [newSlot, setNewSlot] = useState({ datum: '', vrijeme: '', instruktor: 'Ana Marić', ukupno_mjesta: 3 });
+  const [newSlot, setNewSlot] = useState({ datum: '', vrijeme: '', instruktor: 'Marija Trisic', ukupno_mjesta: 3 });
   const [genDays, setGenDays] = useState(7);
   const [genStartDate, setGenStartDate] = useState(new Date().toISOString().split('T')[0]);
   const token = localStorage.getItem('admin_token');
@@ -50,7 +50,7 @@ const AdminSchedulePage = () => {
       if (res.ok) {
         toast.success('Termin kreiran');
         setShowAddDialog(false);
-        setNewSlot({ datum: '', vrijeme: '', instruktor: 'Ana Marić', ukupno_mjesta: 3 });
+        setNewSlot({ datum: '', vrijeme: '', instruktor: 'Marija Trisic', ukupno_mjesta: 3 });
         fetchSlots();
       } else {
         toast.error(data.detail);
@@ -110,7 +110,7 @@ const AdminSchedulePage = () => {
     return `${days[date.getDay()]} ${date.getDate()}.${date.getMonth()+1}.${date.getFullYear()}`;
   };
 
-  const instructors = ['Ana Marić', 'Maja Kovač', 'Ivana Petrović'];
+  const instructors = ['Marija Trisic'];
 
   return (
     <div data-testid="admin-schedule-page">

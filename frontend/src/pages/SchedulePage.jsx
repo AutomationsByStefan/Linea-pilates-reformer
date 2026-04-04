@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { ChevronLeft, ChevronRight, Share2, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Share2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import {
@@ -12,7 +12,6 @@ import {
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-// Timezone-safe date formatting (avoids UTC shift from toISOString)
 const toDateStr = (date) => {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -21,7 +20,6 @@ const toDateStr = (date) => {
 };
 
 const SchedulePage = () => {
-  const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(null);
   const [schedule, setSchedule] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -32,6 +30,7 @@ const SchedulePage = () => {
   const [myBookings, setMyBookings] = useState([]);
   const [showRescheduleDialog, setShowRescheduleDialog] = useState(false);
   const [rescheduleTraining, setRescheduleTraining] = useState(null);
+  const stripRef = useRef(null);
 
   useEffect(() => {
     fetchSchedule();
@@ -56,67 +55,43 @@ const SchedulePage = () => {
     } catch {}
   };
 
-  // Calendar helpers
+  // Generate 10 working days (skip Sundays)
+  const getWorkingDays = () => {
+    const days = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let d = new Date(today);
+    while (days.length < 10) {
+      if (d.getDay() !== 0) { // Skip Sunday
+        days.push(new Date(d));
+      }
+      d.setDate(d.getDate() + 1);
+    }
+    return days;
+  };
+
+  const workingDays = getWorkingDays();
+
+  // Auto-select today on mount
+  useEffect(() => {
+    if (workingDays.length > 0 && !selectedDate) {
+      setSelectedDate(workingDays[0]);
+    }
+  }, []);
+
+  const dayNamesShort = ['Ned', 'Pon', 'Uto', 'Sri', 'Cet', 'Pet', 'Sub'];
+  const dayNamesLong = ['Nedjelja', 'Ponedjeljak', 'Utorak', 'Srijeda', 'Cetvrtak', 'Petak', 'Subota'];
   const months = ['Januar', 'Februar', 'Mart', 'April', 'Maj', 'Juni',
                   'Juli', 'August', 'Septembar', 'Oktobar', 'Novembar', 'Decembar'];
-  const dayNames = ['Pon', 'Uto', 'Sri', 'Čet', 'Pet', 'Sub', 'Ned'];
-  const dayNamesLong = ['Nedjelja', 'Ponedjeljak', 'Utorak', 'Srijeda', 'Četvrtak', 'Petak', 'Subota'];
-
-  // 10-day limit: only show dates from today through today+9
-  const maxDate = new Date();
-  maxDate.setDate(maxDate.getDate() + 9);
-  maxDate.setHours(23, 59, 59, 999);
-
-  const getDaysInMonth = (date) => {
-    const year = date.getFullYear();
-    const month = date.getMonth();
-    const firstDay = new Date(year, month, 1);
-    const lastDay = new Date(year, month + 1, 0);
-    const daysInMonth = lastDay.getDate();
-    let startDay = firstDay.getDay() - 1;
-    if (startDay < 0) startDay = 6;
-    const result = [];
-    for (let i = 0; i < startDay; i++) result.push(null);
-    for (let i = 1; i <= daysInMonth; i++) result.push(new Date(year, month, i));
-    return result;
-  };
 
   const isToday = (date) => date && date.toDateString() === new Date().toDateString();
   const isSelected = (date) => date && selectedDate && date.toDateString() === selectedDate.toDateString();
 
-  const isPast = (date) => {
-    if (!date) return false;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const d = new Date(date);
-    d.setHours(0, 0, 0, 0);
-    return d < today; // Today is NOT past
-  };
-
-  const isBeyondLimit = (date) => {
-    if (!date) return false;
-    const d = new Date(date);
-    d.setHours(0, 0, 0, 0);
-    return d > maxDate;
-  };
-
-  const hasSlots = (date) => {
-    if (!date) return false;
-    const dateStr = toDateStr(date);
-    return schedule.some(s => s.datum === dateStr);
-  };
-
-  const prevMonth = () => { setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1)); setSelectedDate(null); };
-  const nextMonth = () => { setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1)); setSelectedDate(null); };
-
-  const calendarDays = getDaysInMonth(currentMonth);
-
-  // Get slots for selected date, filter past times if today
+  // Get slots for selected date
   const getSelectedDateSlots = () => {
     if (!selectedDate) return [];
     const dateStr = toDateStr(selectedDate);
     let slots = schedule.filter(s => s.datum === dateStr);
-    // If today, filter out past time slots
     if (isToday(selectedDate)) {
       const now = new Date();
       const currentHour = now.getHours();
@@ -135,7 +110,6 @@ const SchedulePage = () => {
   const morningSlots = selectedSlots.filter(s => parseInt(s.vrijeme.split(':')[0]) < 14);
   const afternoonSlots = selectedSlots.filter(s => parseInt(s.vrijeme.split(':')[0]) >= 14);
 
-  // Check if user has a booking for selected date
   const getBookingForDate = (dateStr) => {
     return myBookings.find(b => {
       const bDate = b.datum?.includes('T') ? b.datum.split('T')[0] : b.datum;
@@ -146,7 +120,6 @@ const SchedulePage = () => {
   const selectedDateStr = selectedDate ? toDateStr(selectedDate) : '';
   const existingBookingForDay = getBookingForDate(selectedDateStr);
 
-  // Check if booking is within 30 min for reschedule
   const canReschedule = (booking) => {
     if (!booking?.created_at) return false;
     const created = new Date(booking.created_at);
@@ -154,13 +127,12 @@ const SchedulePage = () => {
     return (now - created) / 60000 <= 30;
   };
 
-  // Open confirmation dialog
   const handleSlotClick = (slot) => {
     if (existingBookingForDay && !rescheduleTraining) {
       if (canReschedule(existingBookingForDay)) {
-        toast.error('Već imate termin za ovaj dan. Koristite opciju "Promijeni termin".');
+        toast.error('Vec imate termin za ovaj dan. Koristite opciju "Promijeni termin".');
       } else {
-        toast.error('Već imate zakazan termin za ovaj dan.');
+        toast.error('Vec imate zakazan termin za ovaj dan.');
       }
       return;
     }
@@ -170,7 +142,6 @@ const SchedulePage = () => {
   const handleConfirmBooking = async () => {
     if (!confirmSlot) return;
 
-    // If this is a reschedule
     if (rescheduleTraining) {
       setBookingSlot(confirmSlot.id);
       try {
@@ -187,16 +158,16 @@ const SchedulePage = () => {
         });
         const data = await response.json();
         if (response.ok) {
-          toast.success('Termin je uspješno promijenjen!');
+          toast.success('Termin je uspjesno promijenjen!');
           setRescheduleTraining(null);
           setShowRescheduleDialog(false);
           fetchSchedule();
           fetchMyBookings();
         } else {
-          toast.error(data.detail || 'Greška pri promjeni termina');
+          toast.error(data.detail || 'Greska pri promjeni termina');
         }
       } catch {
-        toast.error('Greška pri promjeni termina');
+        toast.error('Greska pri promjeni termina');
       } finally {
         setBookingSlot(null);
         setConfirmSlot(null);
@@ -204,7 +175,6 @@ const SchedulePage = () => {
       return;
     }
 
-    // Normal booking
     setBookingSlot(confirmSlot.id);
     try {
       const response = await fetch(`${API}/bookings`, {
@@ -220,7 +190,7 @@ const SchedulePage = () => {
       });
       const data = await response.json();
       if (response.ok) {
-        toast.success('Termin je uspješno rezervisan!');
+        toast.success('Termin je uspjesno rezervisan!');
         setBookedTrainingId(data.training_id);
         setShowShareDialog(true);
         setSchedule(prev => prev.map(s =>
@@ -228,10 +198,10 @@ const SchedulePage = () => {
         ));
         fetchMyBookings();
       } else {
-        toast.error(data.detail || 'Greška pri rezervaciji');
+        toast.error(data.detail || 'Greska pri rezervaciji');
       }
     } catch {
-      toast.error('Greška pri rezervaciji');
+      toast.error('Greska pri rezervaciji');
     } finally {
       setBookingSlot(null);
       setConfirmSlot(null);
@@ -254,7 +224,7 @@ const SchedulePage = () => {
         toast.success('Link kopiran! Podijelite ga s prijateljicom.');
       }
     } catch {
-      toast.error('Greška pri dijeljenju');
+      toast.error('Greska pri dijeljenju');
     }
     setShowShareDialog(false);
   };
@@ -294,54 +264,42 @@ const SchedulePage = () => {
             <p className="text-xs text-muted-foreground">Trenutni: {rescheduleTraining.datum?.split('T')[0]} u {rescheduleTraining.vrijeme}</p>
           </div>
           <Button onClick={() => setRescheduleTraining(null)} variant="ghost" className="h-8 text-xs text-muted-foreground">
-            Otkaži
+            Otkazi
           </Button>
         </div>
       )}
 
-      {/* Calendar */}
-      <div className="card-linea mb-3 p-4 animate-slide-up delay-100">
-        <div className="flex items-center justify-between mb-3">
-          <button onClick={prevMonth} className="p-1.5 hover:bg-secondary rounded-full transition-colors" data-testid="prev-month-btn">
-            <ChevronLeft className="w-5 h-5 text-foreground" />
-          </button>
-          <h2 className="font-heading text-base text-foreground">
-            {months[currentMonth.getMonth()]} {currentMonth.getFullYear()}
-          </h2>
-          <button onClick={nextMonth} className="p-1.5 hover:bg-secondary rounded-full transition-colors" data-testid="next-month-btn">
-            <ChevronRight className="w-5 h-5 text-foreground" />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-7 gap-0.5 mb-1">
-          {dayNames.map((day) => (
-            <div key={day} className="text-center text-[10px] font-medium text-muted-foreground py-0.5">{day}</div>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-7 gap-0.5">
-          {calendarDays.map((date, index) => {
-            const past = isPast(date);
-            const beyond = isBeyondLimit(date);
-            const disabled = !date || past || beyond;
+      {/* Horizontal date strip */}
+      <div className="mb-4 animate-slide-up delay-100" data-testid="date-strip">
+        <div
+          ref={stripRef}
+          className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide"
+          style={{ WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        >
+          {workingDays.map((date) => {
+            const today = isToday(date);
+            const selected = isSelected(date);
             return (
-            <button
-              key={index}
-              onClick={() => date && !disabled && setSelectedDate(date)}
-              disabled={disabled}
-              className={`
-                aspect-square flex items-center justify-center text-xs rounded-lg transition-all duration-200
-                ${!date ? 'invisible' : ''}
-                ${disabled && date ? 'text-muted-foreground/40 cursor-not-allowed' : ''}
-                ${isSelected(date) ? 'gradient-gold text-white font-semibold' : ''}
-                ${isToday(date) && !isSelected(date) ? 'ring-1.5 ring-primary ring-inset font-semibold' : ''}
-                ${!disabled && !isSelected(date) && hasSlots(date) ? 'hover:bg-secondary cursor-pointer' : ''}
-                ${!disabled && !isSelected(date) ? 'text-foreground' : ''}
-              `}
-              data-testid={date ? `calendar-day-${date.getDate()}` : undefined}
-            >
-              {date?.getDate()}
-            </button>
+              <button
+                key={toDateStr(date)}
+                onClick={() => setSelectedDate(date)}
+                className={`flex flex-col items-center justify-center min-w-[56px] h-[68px] rounded-2xl transition-all duration-200 flex-shrink-0
+                  ${selected
+                    ? 'gradient-gold text-white shadow-md'
+                    : today
+                      ? 'bg-primary/10 text-foreground border border-primary/30'
+                      : 'bg-white border border-border text-foreground hover:border-primary/40'
+                  }
+                `}
+                data-testid={`date-strip-${date.getDate()}`}
+              >
+                <span className={`text-[10px] font-medium uppercase ${selected ? 'text-white/80' : 'text-muted-foreground'}`}>
+                  {dayNamesShort[date.getDay()]}
+                </span>
+                <span className={`text-lg font-bold leading-tight ${selected ? 'text-white' : ''}`}>
+                  {date.getDate()}.
+                </span>
+              </button>
             );
           })}
         </div>
@@ -352,7 +310,7 @@ const SchedulePage = () => {
         <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 mb-3 animate-fade-in" data-testid="existing-booking-info">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-foreground">Vaš termin za ovaj dan</p>
+              <p className="text-sm font-medium text-foreground">Vas termin za ovaj dan</p>
               <p className="text-xs text-muted-foreground">{existingBookingForDay.vrijeme}</p>
             </div>
             {canReschedule(existingBookingForDay) && (
@@ -403,16 +361,10 @@ const SchedulePage = () => {
           ) : (
             <div className="text-center py-6 bg-secondary/30 rounded-2xl">
               <p className="text-muted-foreground text-sm">
-                {isToday(selectedDate) ? 'Nema više dostupnih termina za danas' : 'Nema dostupnih termina'}
+                {isToday(selectedDate) ? 'Nema vise dostupnih termina za danas' : 'Nema dostupnih termina'}
               </p>
             </div>
           )}
-        </div>
-      )}
-
-      {!selectedDate && (
-        <div className="text-center py-6 bg-secondary/30 rounded-2xl animate-slide-up delay-200">
-          <p className="text-muted-foreground text-sm">Kliknite na datum za prikaz termina</p>
         </div>
       )}
 
@@ -427,7 +379,7 @@ const SchedulePage = () => {
           <div className="py-4 space-y-4">
             <div className="text-center">
               <p className="text-foreground text-base">
-                {rescheduleTraining ? 'Želite li premjestiti trening na:' : 'Zakazali ste trening u'}
+                {rescheduleTraining ? 'Zelite li premjestiti trening na:' : 'Zakazali ste trening u'}
               </p>
               <p className="text-xl font-heading font-semibold text-foreground mt-2">
                 {formatConfirmDate()}
@@ -437,7 +389,7 @@ const SchedulePage = () => {
               </p>
             </div>
             <p className="text-center text-muted-foreground text-sm">
-              Da li potvrđujete dolazak u ovom terminu?
+              Da li potvrdujete dolazak u ovom terminu?
             </p>
             <div className="flex gap-3">
               <Button onClick={() => setConfirmSlot(null)} variant="outline" className="flex-1 h-12 rounded-full text-base" data-testid="confirm-no-btn">
@@ -445,7 +397,7 @@ const SchedulePage = () => {
               </Button>
               <Button onClick={handleConfirmBooking} disabled={!!bookingSlot}
                 className="flex-1 h-12 rounded-full btn-primary text-base" data-testid="confirm-yes-btn">
-                {bookingSlot ? 'Učitavanje...' : 'Da'}
+                {bookingSlot ? 'Ucitavanje...' : 'Da'}
               </Button>
             </div>
           </div>
@@ -459,11 +411,11 @@ const SchedulePage = () => {
             <DialogTitle className="font-heading text-xl text-center">Termin rezervisan!</DialogTitle>
           </DialogHeader>
           <div className="py-4 space-y-4">
-            <p className="text-center text-muted-foreground">Želite li podijeliti ovaj termin s prijateljicom?</p>
+            <p className="text-center text-muted-foreground">Zelite li podijeliti ovaj termin s prijateljicom?</p>
             <Button onClick={() => handleShare('link')} className="w-full h-12 rounded-full btn-primary" data-testid="share-link-btn">
               <Share2 className="w-5 h-5 mr-2" /> Podijeli termin s prijateljicom
             </Button>
-            <Button onClick={() => setShowShareDialog(false)} variant="ghost" className="w-full h-10">Preskoči</Button>
+            <Button onClick={() => setShowShareDialog(false)} variant="ghost" className="w-full h-10">Preskoci</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -519,7 +471,7 @@ const SlotCard = ({ slot, onBook, isBooking, disabled }) => {
           }`}
         data-testid="book-slot-btn"
       >
-        {isBooking ? '...' : isFull ? 'Puno' : 'Rezerviši'}
+        {isBooking ? '...' : isFull ? 'Puno' : 'Rezervisi'}
       </button>
     </div>
   );
