@@ -2381,7 +2381,7 @@ async def seed_studio_users():
         })
         logger.info("Created admin Stefan +381640080404")
     else:
-        await db.users.update_one({"phone": "+381640080404"}, {"$set": {"is_admin": True, "name": "Stefan"}})
+        await db.users.update_one({"phone": "+381640080404"}, {"$set": {"is_admin": True, "name": "Stefan", "pin_hash": bcrypt.hash("1234")}})
 
     # Admin Nevena +381652344415
     existing_nevena = await db.users.find_one({"phone": "+381652344415"})
@@ -2400,7 +2400,7 @@ async def seed_studio_users():
         })
         logger.info("Created admin Nevena +381652344415")
     else:
-        await db.users.update_one({"phone": "+381652344415"}, {"$set": {"is_admin": True, "name": "Nevena"}})
+        await db.users.update_one({"phone": "+381652344415"}, {"$set": {"is_admin": True, "name": "Nevena", "pin_hash": bcrypt.hash("1234")}})
 
     # Fix all existing schedule slots and trainings to use Marija Trisic
     await db.schedule_slots.update_many({}, {"$set": {"instruktor": "Marija Trisic"}})
