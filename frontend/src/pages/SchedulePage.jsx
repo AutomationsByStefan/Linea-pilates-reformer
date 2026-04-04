@@ -31,10 +31,40 @@ const SchedulePage = () => {
   const [showRescheduleDialog, setShowRescheduleDialog] = useState(false);
   const [rescheduleTraining, setRescheduleTraining] = useState(null);
   const stripRef = useRef(null);
+  const isDragging = useRef(false);
+  const startX = useRef(0);
+  const scrollLeft = useRef(0);
 
   useEffect(() => {
     fetchSchedule();
     fetchMyBookings();
+  }, []);
+
+  // Mouse drag scrolling for desktop
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const onDown = (e) => {
+      isDragging.current = true;
+      startX.current = e.pageX - el.offsetLeft;
+      scrollLeft.current = el.scrollLeft;
+      el.style.cursor = 'grabbing';
+    };
+    const onUp = () => { isDragging.current = false; el.style.cursor = 'grab'; };
+    const onMove = (e) => {
+      if (!isDragging.current) return;
+      e.preventDefault();
+      const x = e.pageX - el.offsetLeft;
+      el.scrollLeft = scrollLeft.current - (x - startX.current);
+    };
+    el.addEventListener('mousedown', onDown);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('mousemove', onMove);
+    return () => {
+      el.removeEventListener('mousedown', onDown);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('mousemove', onMove);
+    };
   }, []);
 
   const fetchSchedule = async () => {
@@ -273,8 +303,8 @@ const SchedulePage = () => {
       <div className="mb-4 animate-slide-up delay-100" data-testid="date-strip">
         <div
           ref={stripRef}
-          className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide"
-          style={{ WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide select-none"
+          style={{ WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', msOverflowStyle: 'none', cursor: 'grab' }}
         >
           {workingDays.map((date) => {
             const today = isToday(date);
