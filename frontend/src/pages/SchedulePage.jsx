@@ -220,7 +220,11 @@ const SchedulePage = () => {
       });
       const data = await response.json();
       if (response.ok) {
-        toast.success('Termin je uspjesno rezervisan!');
+        if (data.is_trial) {
+          toast.success('Cestitamo! Izabrali ste svoj besplatni probni trening!', { duration: 5000 });
+        } else {
+          toast.success('Termin je uspjesno rezervisan!');
+        }
         setBookedTrainingId(data.training_id);
         setShowShareDialog(true);
         setSchedule(prev => prev.map(s =>

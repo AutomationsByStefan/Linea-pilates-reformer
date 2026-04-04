@@ -122,7 +122,15 @@ const AdminLayout = ({ children, user: passedUser }) => {
           ))}
         </nav>
 
-        <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-white/10">
+        <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-white/10 space-y-1">
+          <button
+            onClick={() => { navigate('/'); setSidebarOpen(false); }}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm text-white/60 hover:bg-white/5 hover:text-white transition-all"
+            data-testid="admin-back-to-profile-btn"
+          >
+            <Users className="w-5 h-5" />
+            Moj profil
+          </button>
           <button
             onClick={handleLogout}
             className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-all"

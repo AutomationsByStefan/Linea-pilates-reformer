@@ -612,7 +612,43 @@ async def create_booking(data: BookingRequest, request: Request):
     )
     
     if not membership:
-        raise HTTPException(status_code=400, detail="Nemate aktivnu članarinu ili preostalih termina")
+        # Check if user already used their free trial
+        trial_used = await db.trainings.find_one({
+            "user_id": user.user_id, "is_trial": True
+        })
+        if trial_used:
+            # Already used trial - check if any past trainings exist at all
+            any_training = await db.trainings.count_documents({"user_id": user.user_id})
+            if any_training > 0:
+                raise HTTPException(status_code=400, detail="Iskoristili ste besplatni probni trening. Izaberite paket da biste nastavili.")
+            raise HTTPException(status_code=400, detail="Nemate aktivnu clanarinu. Izaberite paket u sekciji 'Paketi'.")
+        
+        # First-time free trial
+        training_id = str(uuid.uuid4())
+        training = {
+            "id": training_id,
+            "user_id": user.user_id,
+            "slot_id": data.slot_id,
+            "datum": data.datum,
+            "vrijeme": data.vrijeme,
+            "instruktor": data.instruktor,
+            "tip": "predstojeći",
+            "trajanje": 50,
+            "is_trial": True,
+            "feedback_submitted": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.trainings.insert_one(training)
+        await db.users.update_one(
+            {"user_id": user.user_id},
+            {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
+        )
+        return {
+            "success": True,
+            "training_id": training_id,
+            "is_trial": True,
+            "message": "Cestitamo! Izabrali ste svoj besplatni probni trening!"
+        }
     
     # Check one booking per day limit
     existing_today = await db.trainings.find_one({
@@ -621,7 +657,7 @@ async def create_booking(data: BookingRequest, request: Request):
         "tip": "predstojeći"
     })
     if existing_today:
-        raise HTTPException(status_code=400, detail="Već imate zakazan termin za ovaj dan. Možete imati samo jedan termin dnevno.")
+        raise HTTPException(status_code=400, detail="Vec imate zakazan termin za ovaj dan. Mozete imati samo jedan termin dnevno.")
     
     # Check actual slot availability
     slot = await db.schedule_slots.find_one({"id": data.slot_id}, {"_id": 0})
@@ -663,7 +699,7 @@ async def create_booking(data: BookingRequest, request: Request):
     return {
         "success": True,
         "training_id": training_id,
-        "message": "Termin je uspješno rezervisan!"
+        "message": "Termin je uspjesno rezervisan!"
     }
 
 class RescheduleRequest(BaseModel):
@@ -1990,10 +2026,12 @@ async def admin_get_users(request: Request):
 
 @api_router.get("/admin/schedule")
 async def admin_get_schedule(request: Request):
-    """Get all schedule slots from DB"""
+    """Get schedule slots for today + next 10 days"""
     await get_admin_user(request)
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    end_date = (datetime.now(timezone.utc) + timedelta(days=10)).strftime("%Y-%m-%d")
     slots = await db.schedule_slots.find(
-        {}, {"_id": 0}
+        {"datum": {"$gte": today_str, "$lte": end_date}}, {"_id": 0}
     ).sort([("datum", 1), ("vrijeme", 1)]).to_list(5000)
     # Enrich with booking count
     for slot in slots:
@@ -2061,11 +2099,12 @@ async def admin_delete_slot(slot_id: str, request: Request):
 
 @api_router.get("/admin/bookings")
 async def admin_get_bookings(request: Request):
-    """Get all bookings"""
+    """Get only upcoming bookings"""
     await get_admin_user(request)
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     trainings = await db.trainings.find(
-        {}, {"_id": 0}
-    ).sort("datum", -1).to_list(1000)
+        {"tip": "predstojeći", "datum": {"$gte": today_str}}, {"_id": 0}
+    ).sort("datum", 1).to_list(1000)
     result = []
     for t in trainings:
         user = await db.users.find_one({"user_id": t["user_id"]}, {"_id": 0, "name": 1, "phone": 1, "email": 1})
