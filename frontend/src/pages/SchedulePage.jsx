@@ -226,7 +226,11 @@ const SchedulePage = () => {
           toast.success('Termin je uspjesno rezervisan!');
         }
         setBookedTrainingId(data.training_id);
-        setShowShareDialog(true);
+        const updatedSlot = schedule.find(s => s.id === confirmSlot.id);
+        const remainingSpots = updatedSlot ? updatedSlot.slobodna_mjesta - 1 : 0;
+        if (remainingSpots > 0) {
+          setShowShareDialog(true);
+        }
         setSchedule(prev => prev.map(s =>
           s.id === confirmSlot.id ? { ...s, slobodna_mjesta: Math.max(0, s.slobodna_mjesta - 1) } : s
         ));
