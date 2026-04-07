@@ -32,6 +32,7 @@ const AdminSchedulePage = () => {
     finally { setLoading(false); }
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchSlots(); }, []);
 
   const handleAddSlot = async () => {

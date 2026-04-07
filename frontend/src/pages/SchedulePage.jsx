@@ -107,6 +107,7 @@ const SchedulePage = () => {
     if (workingDays.length > 0 && !selectedDate) {
       setSelectedDate(workingDays[0]);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const dayNamesShort = ['Ned', 'Pon', 'Uto', 'Sri', 'Cet', 'Pet', 'Sub'];
