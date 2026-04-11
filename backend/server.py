@@ -2207,6 +2207,138 @@ async def admin_generate_week(request: Request):
                 created += 1
     return {"success": True, "message": f"Kreirano {created} novih termina", "created": created}
 
+
+# ============== ADDITIONAL ADMIN ENDPOINTS ==============
+
+@api_router.get("/admin/all-users")
+async def admin_get_all_users(request: Request):
+    """Return all users including archived ones"""
+    await get_admin_user(request)
+    active_users = await db.users.find({}, {"_id": 0}).to_list(10000)
+    archived_users = await db.archived_users.find({}, {"_id": 0}).to_list(10000)
+    for u in archived_users:
+        u["is_archived"] = True
+        u["status"] = "grey"
+        u["actions_disabled"] = True
+    for u in active_users:
+        u["is_archived"] = False
+    return active_users + archived_users
+
+@api_router.get("/admin/today-trainings")
+async def admin_get_today_trainings(request: Request):
+    """Return all non-cancelled trainings for today sorted by time"""
+    await get_admin_user(request)
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    trainings = await db.trainings.find(
+        {"datum": {"$regex": f"^{today_str}"}, "tip": {"$ne": "otkazan"}},
+        {"_id": 0}
+    ).sort("vrijeme", 1).to_list(1000)
+    # Enrich with user names
+    for t in trainings:
+        user = await db.users.find_one({"user_id": t.get("user_id")}, {"_id": 0, "name": 1, "phone": 1})
+        t["user_name"] = user.get("name", "Nepoznat") if user else "Nepoznat"
+        t["user_phone"] = user.get("phone", "") if user else ""
+    return trainings
+
+@api_router.delete("/admin/schedule/slots/{slot_id}/force")
+async def admin_force_delete_slot(slot_id: str, request: Request):
+    """Force delete a slot and cancel all its bookings"""
+    await get_admin_user(request)
+    slot = await db.schedule_slots.find_one({"id": slot_id}, {"_id": 0})
+    if not slot:
+        raise HTTPException(status_code=404, detail="Termin nije pronadjen")
+    cancelled = await db.trainings.update_many(
+        {"slot_id": slot_id, "tip": "predstojeći"},
+        {"$set": {"tip": "otkazan"}}
+    )
+    await db.schedule_slots.delete_one({"id": slot_id})
+    return {"success": True, "message": f"Termin obrisan, otkazano {cancelled.modified_count} rezervacija", "cancelled_bookings": cancelled.modified_count}
+
+class DeleteDayRequest(BaseModel):
+    datum: str
+
+@api_router.post("/admin/schedule/delete-day")
+async def admin_delete_day_slots(data: DeleteDayRequest, request: Request):
+    """Delete all slots for a given date and cancel related bookings"""
+    await get_admin_user(request)
+    slots = await db.schedule_slots.find({"datum": data.datum}, {"_id": 0, "id": 1}).to_list(1000)
+    slot_ids = [s["id"] for s in slots]
+    cancelled = 0
+    if slot_ids:
+        result = await db.trainings.update_many(
+            {"slot_id": {"$in": slot_ids}, "tip": "predstojeći"},
+            {"$set": {"tip": "otkazan"}}
+        )
+        cancelled = result.modified_count
+    deleted = await db.schedule_slots.delete_many({"datum": data.datum})
+    return {"success": True, "deleted_slots": deleted.deleted_count, "cancelled_bookings": cancelled}
+
+@api_router.post("/admin/users/{user_id}/archive")
+async def admin_archive_user(user_id: str, request: Request):
+    """Move user to archived_users collection"""
+    await get_admin_user(request)
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="Korisnik nije pronadjen")
+    if user.get("is_admin"):
+        raise HTTPException(status_code=400, detail="Ne mozete arhivirati admin korisnika")
+    user["archived_at"] = datetime.now(timezone.utc).isoformat()
+    await db.archived_users.insert_one(user)
+    await db.users.delete_one({"user_id": user_id})
+    await db.user_sessions.delete_many({"user_id": user_id})
+    return {"success": True, "message": "Korisnik je arhiviran"}
+
+@api_router.get("/admin/warnings")
+async def admin_get_warnings(request: Request):
+    """Return users with 0 sessions, expiring memberships, and inactive users"""
+    await get_admin_user(request)
+    now = datetime.now(timezone.utc)
+    seven_days = (now + timedelta(days=7)).isoformat()
+    thirty_days_ago = (now - timedelta(days=30)).isoformat()
+    today_str = now.strftime("%Y-%m-%d")
+
+    # Users with 0 remaining sessions
+    zero_sessions = await db.memberships.find(
+        {"tip": "aktivna", "preostali_termini": 0}, {"_id": 0}
+    ).to_list(1000)
+    zero_session_user_ids = list(set(m["user_id"] for m in zero_sessions))
+    zero_session_users = []
+    for uid in zero_session_user_ids:
+        u = await db.users.find_one({"user_id": uid}, {"_id": 0, "user_id": 1, "name": 1, "phone": 1})
+        if u:
+            u["warning_type"] = "zero_sessions"
+            zero_session_users.append(u)
+
+    # Memberships expiring within 7 days
+    expiring = await db.memberships.find(
+        {"tip": "aktivna", "datum_isteka": {"$lte": seven_days, "$gte": today_str}}, {"_id": 0}
+    ).to_list(1000)
+    expiring_user_ids = list(set(m["user_id"] for m in expiring))
+    expiring_users = []
+    for uid in expiring_user_ids:
+        u = await db.users.find_one({"user_id": uid}, {"_id": 0, "user_id": 1, "name": 1, "phone": 1})
+        if u:
+            membership = next((m for m in expiring if m["user_id"] == uid), None)
+            u["warning_type"] = "expiring_membership"
+            u["datum_isteka"] = membership["datum_isteka"] if membership else ""
+            expiring_users.append(u)
+
+    # Users inactive for 30+ days
+    inactive_users_cursor = db.users.find(
+        {"is_admin": {"$ne": True}, "last_activity": {"$lt": thirty_days_ago}},
+        {"_id": 0, "user_id": 1, "name": 1, "phone": 1, "last_activity": 1}
+    )
+    inactive_users = await inactive_users_cursor.to_list(1000)
+    for u in inactive_users:
+        u["warning_type"] = "inactive_30_days"
+
+    return {
+        "zero_sessions": zero_session_users,
+        "expiring_memberships": expiring_users,
+        "inactive_users": inactive_users
+    }
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
