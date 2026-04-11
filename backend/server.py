@@ -138,7 +138,7 @@ class AdminCustomMembershipRequest(BaseModel):
     naziv: str
     cijena: float
     termini: int
-    trajanje_dana: int = 30
+    trajanje_dana: int = 35
 
 class ManualIncomeRequest(BaseModel):
     iznos: float
@@ -155,7 +155,7 @@ class PackageCreateRequest(BaseModel):
     opis: str = "Mala grupa do 3 osobe"
     cijena: float
     termini: int
-    trajanje_dana: int = 30
+    trajanje_dana: int = 35
     popular: bool = False
     active: bool = True
 
@@ -1414,7 +1414,7 @@ async def admin_approve_package(request_id: str, request: Request):
         "ukupni_termini": pkg_req["package_sessions"],
         "cijena": pkg_req["package_price"],
         "datum_pocetka": now.isoformat(),
-        "datum_isteka": (now + timedelta(days=30)).isoformat(),
+        "datum_isteka": (now + timedelta(days=35)).isoformat(),
         "created_at": now.isoformat()
     }
     # Deactivate any existing active membership
@@ -1712,6 +1712,7 @@ async def admin_delete_reminder(reminder_id: str, request: Request):
 
 # ============== ADMIN CUSTOM MEMBERSHIP ==============
 
+@api_router.post("/admin/users/{user_id}/add-membership")
 @api_router.post("/admin/users/{user_id}/custom-membership")
 async def admin_create_custom_membership(user_id: str, data: AdminCustomMembershipRequest, request: Request):
     """Admin creates a custom membership directly for a user (bypassing package requests)"""
@@ -1951,17 +1952,29 @@ async def admin_logout(request: Request, response: Response):
 
 @api_router.get("/admin/dashboard")
 async def admin_dashboard(request: Request):
-    """Admin dashboard stats"""
+    """Admin dashboard stats with real-time counts"""
     await get_admin_user(request)
     now = datetime.now(timezone.utc)
     today_str = now.strftime("%Y-%m-%d")
+    month_start = now.replace(day=1).strftime("%Y-%m-%d")
     total_users = await db.users.count_documents({"is_admin": {"$ne": True}})
     active_memberships = await db.memberships.count_documents({"tip": "aktivna"})
     today_trainings = await db.trainings.count_documents({
-        "datum": {"$regex": f"^{today_str}"}, "tip": "predstojeći"
+        "datum": {"$regex": f"^{today_str}"}, "tip": {"$ne": "otkazan"}
     })
     total_bookings = await db.trainings.count_documents({})
     pending_requests = await db.package_requests.count_documents({"status": "pending"})
+    # Current month revenue from approved packages
+    month_approved = await db.package_requests.find(
+        {"status": "approved", "approved_at": {"$gte": now.replace(day=1).isoformat()}}, {"_id": 0, "package_price": 1}
+    ).to_list(1000)
+    pkg_revenue = sum(r.get("package_price", 0) for r in month_approved)
+    # Current month manual income
+    manual_entries = await db.manual_income.find(
+        {"datum": {"$gte": month_start}}, {"_id": 0, "iznos": 1}
+    ).to_list(1000)
+    manual_revenue = sum(e.get("iznos", 0) for e in manual_entries)
+    month_revenue = pkg_revenue + manual_revenue
     recent_users = await db.users.find(
         {"is_admin": {"$ne": True}}, {"_id": 0, "user_id": 1, "name": 1, "email": 1, "phone": 1, "created_at": 1}
     ).sort("created_at", -1).to_list(5)
@@ -1974,6 +1987,9 @@ async def admin_dashboard(request: Request):
         "danasnji_treninzi": today_trainings,
         "ukupno_rezervacija": total_bookings,
         "zahtjevi_na_cekanju": pending_requests,
+        "mjesecni_prihod": month_revenue,
+        "prihod_paketi": pkg_revenue,
+        "prihod_rucni": manual_revenue,
         "posljednji_korisnici": recent_users,
         "posljednji_zahtjevi": recent_requests
     }
@@ -1982,32 +1998,42 @@ async def admin_dashboard(request: Request):
 
 @api_router.get("/admin/users")
 async def admin_get_users(request: Request):
-    """Get all users with full details"""
+    """Get all users including archived, with full details"""
     await get_admin_user(request)
     users = await db.users.find({"is_admin": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    archived_users = await db.archived_users.find({}, {"_id": 0}).sort("archived_at", -1).to_list(500)
+    for au in archived_users:
+        au["is_archived"] = True
+        au["disable_actions"] = True
+    all_users = users + archived_users
     result = []
-    for u in users:
-        membership = await db.memberships.find_one(
-            {"user_id": u["user_id"], "tip": {"$in": ["aktivna", "zamrznuta"]}}, {"_id": 0}
-        )
-        upcoming = await db.trainings.count_documents(
-            {"user_id": u["user_id"], "tip": "predstojeći"}
-        )
-        pending_req = await db.package_requests.find_one(
-            {"user_id": u["user_id"], "status": "pending"}, {"_id": 0}
-        )
+    for u in all_users:
+        is_archived = u.get("is_archived", False)
+        membership = None
+        upcoming = 0
+        pending_req = None
+        if not is_archived:
+            membership = await db.memberships.find_one(
+                {"user_id": u["user_id"], "tip": {"$in": ["aktivna", "zamrznuta"]}}, {"_id": 0}
+            )
+            upcoming = await db.trainings.count_documents(
+                {"user_id": u["user_id"], "tip": "predstojeći"}
+            )
+            pending_req = await db.package_requests.find_one(
+                {"user_id": u["user_id"], "status": "pending"}, {"_id": 0}
+            )
         user_status = u.get("status", "active")
-        if membership and membership.get("tip") == "zamrznuta":
+        if is_archived:
+            user_status = "archived"
+        elif membership and membership.get("tip") == "zamrznuta":
             user_status = "frozen"
         elif membership and membership.get("tip") == "aktivna":
             user_status = "active"
         elif pending_req:
             user_status = "pending"
-        elif not membership:
-            user_status = "pending" if pending_req else u.get("status", "active")
         result.append({
             **u,
-            "aktivna_clanarina": membership is not None and membership.get("tip") == "aktivna",
+            "aktivna_clanarina": membership is not None and membership.get("tip") == "aktivna" if not is_archived else False,
             "naziv_paketa": membership.get("naziv", "-") if membership else (pending_req.get("package_name", "Na čekanju") if pending_req else "-"),
             "preostali_termini": membership.get("preostali_termini", 0) if membership else 0,
             "ukupni_termini": membership.get("ukupni_termini", 0) if membership else 0,
@@ -2018,7 +2044,8 @@ async def admin_get_users(request: Request):
             "freeze_start": membership.get("freeze_start") if membership else None,
             "freeze_end": membership.get("freeze_end") if membership else None,
             "korisnik_status": user_status,
-            "pending_request": pending_req
+            "pending_request": pending_req,
+            "disable_actions": is_archived
         })
     return result
 
@@ -2080,34 +2107,23 @@ async def admin_update_slot(slot_id: str, data: AdminSlotRequest, request: Reque
 
 @api_router.delete("/admin/schedule/slots/{slot_id}")
 async def admin_delete_slot(slot_id: str, request: Request):
-    """Delete a schedule slot"""
+    """Delete a schedule slot without any checks"""
     await get_admin_user(request)
-    booked = await db.trainings.count_documents({
-        "slot_id": slot_id, "tip": "predstojeći"
-    })
-    if booked > 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Ne možete obrisati termin sa {booked} aktivnih rezervacija. Prvo otkažite rezervacije."
-        )
-    result = await db.schedule_slots.delete_one({"id": slot_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Termin nije pronađen")
+    await db.schedule_slots.delete_one({"id": slot_id})
     return {"success": True, "message": "Termin je obrisan"}
 
 # ============== ADMIN BOOKINGS ==============
 
 @api_router.get("/admin/bookings")
 async def admin_get_bookings(request: Request):
-    """Get only upcoming bookings"""
+    """Get ALL trainings with user names"""
     await get_admin_user(request)
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     trainings = await db.trainings.find(
-        {"tip": "predstojeći", "datum": {"$gte": today_str}}, {"_id": 0}
-    ).sort("datum", 1).to_list(1000)
+        {}, {"_id": 0}
+    ).sort("datum", -1).to_list(5000)
     result = []
     for t in trainings:
-        user = await db.users.find_one({"user_id": t["user_id"]}, {"_id": 0, "name": 1, "phone": 1, "email": 1})
+        user = await db.users.find_one({"user_id": t.get("user_id")}, {"_id": 0, "name": 1, "phone": 1, "email": 1})
         result.append({**t, "korisnik": user})
     return result
 
@@ -2259,19 +2275,10 @@ class DeleteDayRequest(BaseModel):
 
 @api_router.post("/admin/schedule/delete-day")
 async def admin_delete_day_slots(data: DeleteDayRequest, request: Request):
-    """Delete all slots for a given date and cancel related bookings"""
+    """Delete ALL slots for a given date"""
     await get_admin_user(request)
-    slots = await db.schedule_slots.find({"datum": data.datum}, {"_id": 0, "id": 1}).to_list(1000)
-    slot_ids = [s["id"] for s in slots]
-    cancelled = 0
-    if slot_ids:
-        result = await db.trainings.update_many(
-            {"slot_id": {"$in": slot_ids}, "tip": "predstojeći"},
-            {"$set": {"tip": "otkazan"}}
-        )
-        cancelled = result.modified_count
     deleted = await db.schedule_slots.delete_many({"datum": data.datum})
-    return {"success": True, "deleted_slots": deleted.deleted_count, "cancelled_bookings": cancelled}
+    return {"success": True, "deleted_slots": deleted.deleted_count}
 
 @api_router.post("/admin/users/{user_id}/archive")
 async def admin_archive_user(user_id: str, request: Request):
