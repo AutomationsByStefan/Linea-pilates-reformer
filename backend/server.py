@@ -1165,7 +1165,7 @@ async def delete_weight_entry(entry_id: str, request: Request):
 # ============== PROFILE PHOTO ==============
 
 class ProfilePhotoRequest(BaseModel):
-    image: str  # base64 encoded image
+    photo: str
 
 @api_router.post("/user/profile-photo")
 async def upload_profile_photo(data: ProfilePhotoRequest, request: Request):
@@ -1173,9 +1173,9 @@ async def upload_profile_photo(data: ProfilePhotoRequest, request: Request):
     user = await get_current_user(request)
     await db.users.update_one(
         {"user_id": user.user_id},
-        {"$set": {"profile_photo": data.image}}
+        {"$set": {"profile_photo": data.photo}}
     )
-    return {"success": True, "message": "Profilna slika je sacuvana"}
+    return {"success": True}
 
 # ============== NOTIFICATIONS ==============
 
