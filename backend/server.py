@@ -2274,6 +2274,7 @@ class DeleteDayRequest(BaseModel):
     datum: str
 
 @api_router.post("/admin/schedule/delete-day")
+@api_router.delete("/admin/schedule/delete-day")
 async def admin_delete_day_slots(data: DeleteDayRequest, request: Request):
     """Delete ALL slots for a given date"""
     await get_admin_user(request)
