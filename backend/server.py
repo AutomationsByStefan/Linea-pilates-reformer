@@ -568,23 +568,76 @@ async def get_trainings(request: Request):
 
 @api_router.get("/trainings/upcoming")
 async def get_upcoming_trainings(request: Request):
-    """Get user's upcoming trainings"""
+    """Get user's upcoming trainings where datetime is in the future"""
     user = await get_current_user(request)
+    now = datetime.now(timezone.utc)
     trainings = await db.trainings.find(
         {"user_id": user.user_id, "tip": "predstojeći"},
         {"_id": 0}
     ).to_list(100)
-    return trainings
+    result = []
+    for t in trainings:
+        try:
+            d = t.get("datum", "")
+            if "T" in d:
+                d = d.split("T")[0]
+            v = t.get("vrijeme", "00:00")
+            training_dt = datetime.strptime(f"{d} {v}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            if training_dt > now:
+                result.append(t)
+        except Exception:
+            result.append(t)
+    return result
 
 @api_router.get("/trainings/past")
 async def get_past_trainings(request: Request):
-    """Get user's past trainings"""
+    """Get user's past trainings (time passed or status finished)"""
     user = await get_current_user(request)
+    now = datetime.now(timezone.utc)
     trainings = await db.trainings.find(
-        {"user_id": user.user_id, "tip": {"$in": ["prethodni", "završen"]}},
+        {"user_id": user.user_id, "tip": {"$in": ["prethodni", "završen", "iskoristen", "predstojeći"]}},
         {"_id": 0}
-    ).to_list(100)
-    return trainings
+    ).to_list(500)
+    result = []
+    for t in trainings:
+        if t.get("tip") in ["prethodni", "završen", "iskoristen"]:
+            result.append(t)
+            continue
+        try:
+            d = t.get("datum", "")
+            if "T" in d:
+                d = d.split("T")[0]
+            v = t.get("vrijeme", "00:00")
+            training_dt = datetime.strptime(f"{d} {v}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            if training_dt <= now:
+                result.append(t)
+        except Exception:
+            pass
+    return result
+
+@api_router.post("/trainings/{training_id}/cancel")
+async def cancel_training(training_id: str, request: Request):
+    """Cancel a training and restore membership session"""
+    user = await get_current_user(request)
+    training = await db.trainings.find_one(
+        {"id": training_id, "user_id": user.user_id}, {"_id": 0}
+    )
+    if not training:
+        raise HTTPException(status_code=404, detail="Trening nije pronadjen")
+    if training.get("tip") == "otkazan":
+        raise HTTPException(status_code=400, detail="Trening je vec otkazan")
+    await db.trainings.update_one(
+        {"id": training_id},
+        {"$set": {"tip": "otkazan"}}
+    )
+    # Restore session to active membership if not a trial booking
+    if not training.get("is_trial"):
+        await db.memberships.update_one(
+            {"user_id": user.user_id, "tip": "aktivna"},
+            {"$inc": {"preostali_termini": 1}}
+        )
+    return {"success": True, "message": "Trening je otkazan"}
+
 
 @api_router.get("/trainings/{training_id}")
 async def get_training(training_id: str, request: Request):
@@ -612,16 +665,17 @@ async def create_booking(data: BookingRequest, request: Request):
     )
     
     if not membership:
+        # Check if user ever had any membership
+        any_membership = await db.memberships.find_one({"user_id": user.user_id})
+        if any_membership:
+            raise HTTPException(status_code=400, detail="Nemate aktivnu clanarinu ili preostalih termina. Izaberite paket u sekciji 'Paketi'.")
+        
         # Check if user already used their free trial
         trial_used = await db.trainings.find_one({
             "user_id": user.user_id, "is_trial": True
         })
         if trial_used:
-            # Already used trial - check if any past trainings exist at all
-            any_training = await db.trainings.count_documents({"user_id": user.user_id})
-            if any_training > 0:
-                raise HTTPException(status_code=400, detail="Iskoristili ste besplatni probni trening. Izaberite paket da biste nastavili.")
-            raise HTTPException(status_code=400, detail="Nemate aktivnu clanarinu. Izaberite paket u sekciji 'Paketi'.")
+            raise HTTPException(status_code=400, detail="Iskoristili ste besplatni probni trening. Izaberite paket da biste nastavili.")
         
         # First-time free trial
         training_id = str(uuid.uuid4())
@@ -1069,13 +1123,27 @@ async def add_weight_entry(data: WeightEntry, request: Request):
 
 @api_router.get("/weight")
 async def get_weight_history(request: Request):
-    """Get user's weight history"""
+    """Get user's weight history with trend"""
     user = await get_current_user(request)
     
     entries = await db.weight_entries.find(
         {"user_id": user.user_id},
         {"_id": 0}
     ).sort("date", -1).to_list(100)
+    
+    # Calculate trend for each entry
+    for i, entry in enumerate(entries):
+        if i < len(entries) - 1:
+            prev = entries[i + 1].get("weight", 0)
+            curr = entry.get("weight", 0)
+            if curr > prev:
+                entry["trend"] = "povećanje"
+            elif curr < prev:
+                entry["trend"] = "smanjenje"
+            else:
+                entry["trend"] = "bez promjene"
+        else:
+            entry["trend"] = "bez promjene"
     
     return entries
 
@@ -1092,6 +1160,22 @@ async def delete_weight_entry(entry_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Unos nije pronađen")
     
     return {"success": True, "message": "Unos je obrisan"}
+
+
+# ============== PROFILE PHOTO ==============
+
+class ProfilePhotoRequest(BaseModel):
+    image: str  # base64 encoded image
+
+@api_router.post("/user/profile-photo")
+async def upload_profile_photo(data: ProfilePhotoRequest, request: Request):
+    """Save base64 profile photo to user document"""
+    user = await get_current_user(request)
+    await db.users.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"profile_photo": data.image}}
+    )
+    return {"success": True, "message": "Profilna slika je sacuvana"}
 
 # ============== NOTIFICATIONS ==============
 
@@ -2124,7 +2208,9 @@ async def admin_get_bookings(request: Request):
     result = []
     for t in trainings:
         user = await db.users.find_one({"user_id": t.get("user_id")}, {"_id": 0, "name": 1, "phone": 1, "email": 1})
-        result.append({**t, "korisnik": user})
+        t["korisnik"] = user
+        t["korisnik_ime"] = user.get("name", "Nepoznat") if user else "Nepoznat"
+        result.append(t)
     return result
 
 @api_router.post("/admin/bookings/{training_id}/cancel")
