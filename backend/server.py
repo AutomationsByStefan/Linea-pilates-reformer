@@ -139,6 +139,7 @@ class AdminCustomMembershipRequest(BaseModel):
     cijena: float
     termini: int
     trajanje_dana: int = 35
+    start_date: str = None
 
 class ManualIncomeRequest(BaseModel):
     iznos: float
@@ -1768,6 +1769,10 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
     if not user_doc:
         raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
     now = datetime.now(timezone.utc)
+    if data.start_date:
+        start = datetime.strptime(data.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    else:
+        start = now
     # Deactivate any existing active membership
     await db.memberships.update_many(
         {"user_id": user_id, "tip": "aktivna"},
@@ -1782,8 +1787,8 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
         "preostali_termini": data.termini,
         "ukupni_termini": data.termini,
         "cijena": data.cijena,
-        "datum_pocetka": now.isoformat(),
-        "datum_isteka": (now + timedelta(days=data.trajanje_dana)).isoformat(),
+        "datum_pocetka": start.isoformat(),
+        "datum_isteka": (start + timedelta(days=data.trajanje_dana)).isoformat(),
         "created_by": admin_user.get("name", "Admin"),
         "created_at": now.isoformat()
     }
