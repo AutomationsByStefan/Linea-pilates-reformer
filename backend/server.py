@@ -547,13 +547,30 @@ async def get_memberships(request: Request):
 
 @api_router.get("/memberships/active")
 async def get_active_memberships(request: Request):
-    """Get user's active memberships"""
+    """Get user's active memberships with correct status"""
     user = await get_current_user(request)
+    now = datetime.now(timezone.utc)
     memberships = await db.memberships.find(
         {"user_id": user.user_id, "tip": "aktivna"},
         {"_id": 0}
     ).to_list(100)
-    return memberships
+    result = []
+    for m in memberships:
+        isteka = m.get("datum_isteka", "")
+        preostali = m.get("preostali_termini", 0)
+        try:
+            if isinstance(isteka, str):
+                exp = datetime.fromisoformat(isteka.replace("Z", "+00:00"))
+            else:
+                exp = isteka
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            is_valid = exp > now and preostali > 0
+        except Exception:
+            is_valid = preostali > 0
+        m["status"] = "aktivna" if is_valid else "istekla"
+        result.append(m)
+    return result
 
 # ============== TRAININGS ==============
 
@@ -631,11 +648,13 @@ async def cancel_training(training_id: str, request: Request):
         {"id": training_id},
         {"$set": {"tip": "otkazan"}}
     )
+    logger.info(f"Training {training_id} cancelled for user {user.user_id}")
     # Restore session to active membership
-    await db.memberships.update_one(
+    restore_result = await db.memberships.update_one(
         {"user_id": user.user_id, "tip": "aktivna"},
         {"$inc": {"preostali_termini": 1}}
     )
+    logger.info(f"Membership restore for user {user.user_id}: matched={restore_result.matched_count}, modified={restore_result.modified_count}")
     return {"success": True, "message": "Trening je otkazan"}
 
 
