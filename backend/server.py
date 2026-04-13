@@ -630,12 +630,11 @@ async def cancel_training(training_id: str, request: Request):
         {"id": training_id},
         {"$set": {"tip": "otkazan"}}
     )
-    # Restore session to active membership if not a trial booking
-    if not training.get("is_trial"):
-        await db.memberships.update_one(
-            {"user_id": user.user_id, "tip": "aktivna"},
-            {"$inc": {"preostali_termini": 1}}
-        )
+    # Restore session to active membership
+    await db.memberships.update_one(
+        {"user_id": user.user_id, "tip": "aktivna"},
+        {"$inc": {"preostali_termini": 1}}
+    )
     return {"success": True, "message": "Trening je otkazan"}
 
 
@@ -665,44 +664,7 @@ async def create_booking(data: BookingRequest, request: Request):
     )
     
     if not membership:
-        # Check if user ever had any membership
-        any_membership = await db.memberships.find_one({"user_id": user.user_id})
-        if any_membership:
-            raise HTTPException(status_code=400, detail="Nemate aktivnu clanarinu ili preostalih termina. Izaberite paket u sekciji 'Paketi'.")
-        
-        # Check if user already used their free trial
-        trial_used = await db.trainings.find_one({
-            "user_id": user.user_id, "is_trial": True
-        })
-        if trial_used:
-            raise HTTPException(status_code=400, detail="Iskoristili ste besplatni probni trening. Izaberite paket da biste nastavili.")
-        
-        # First-time free trial
-        training_id = str(uuid.uuid4())
-        training = {
-            "id": training_id,
-            "user_id": user.user_id,
-            "slot_id": data.slot_id,
-            "datum": data.datum,
-            "vrijeme": data.vrijeme,
-            "instruktor": data.instruktor,
-            "tip": "predstojeći",
-            "trajanje": 50,
-            "is_trial": True,
-            "feedback_submitted": False,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        await db.trainings.insert_one(training)
-        await db.users.update_one(
-            {"user_id": user.user_id},
-            {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
-        )
-        return {
-            "success": True,
-            "training_id": training_id,
-            "is_trial": True,
-            "message": "Cestitamo! Izabrali ste svoj besplatni probni trening!"
-        }
+        raise HTTPException(status_code=400, detail="Nemate aktivnu clanarinu ili preostalih termina. Izaberite paket u sekciji 'Paketi'.")
     
     # Check one booking per day limit
     existing_today = await db.trainings.find_one({
@@ -2364,8 +2326,12 @@ class DeleteDayRequest(BaseModel):
 async def admin_delete_day_slots(data: DeleteDayRequest, request: Request):
     """Delete ALL slots for a given date"""
     await get_admin_user(request)
-    deleted = await db.schedule_slots.delete_many({"datum": data.datum})
-    return {"success": True, "deleted_slots": deleted.deleted_count}
+    logger.info(f"Deleting all slots for datum={data.datum}")
+    count_before = await db.schedule_slots.count_documents({"datum": data.datum})
+    logger.info(f"Found {count_before} slots to delete for datum={data.datum}")
+    result = await db.schedule_slots.delete_many({"datum": data.datum})
+    logger.info(f"Deleted {result.deleted_count} slots for datum={data.datum}")
+    return {"success": True, "deleted": result.deleted_count}
 
 @api_router.post("/admin/users/{user_id}/archive")
 async def admin_archive_user(user_id: str, request: Request):
@@ -2434,6 +2400,96 @@ async def admin_get_warnings(request: Request):
 
 
 # Include the router in the main app
+
+# ============== ADMIN ANALYTICS ==============
+
+@api_router.get("/admin/analytics/clients")
+async def admin_analytics_clients(request: Request):
+    """Active vs inactive clients with details"""
+    await get_admin_user(request)
+    all_users = await db.users.find({"is_admin": {"$ne": True}}, {"_id": 0}).to_list(10000)
+    active_clients = []
+    inactive_clients = []
+    for u in all_users:
+        uid = u.get("user_id")
+        active_mem = await db.memberships.find_one(
+            {"user_id": uid, "tip": "aktivna"}, {"_id": 0}
+        )
+        if active_mem:
+            active_clients.append({
+                "user_id": uid,
+                "name": u.get("name", ""),
+                "phone": u.get("phone", ""),
+                "last_activity": u.get("last_activity", ""),
+                "paket": active_mem.get("naziv", ""),
+                "preostali_termini": active_mem.get("preostali_termini", 0),
+                "datum_isteka": active_mem.get("datum_isteka", "")
+            })
+        else:
+            prev_mem = await db.memberships.find_one(
+                {"user_id": uid, "tip": {"$in": ["prethodna", "istekla"]}},
+                {"_id": 0},
+                sort=[("datum_isteka", -1)]
+            )
+            if prev_mem:
+                inactive_clients.append({
+                    "user_id": uid,
+                    "name": u.get("name", ""),
+                    "phone": u.get("phone", ""),
+                    "last_activity": u.get("last_activity", ""),
+                    "prethodni_paket": prev_mem.get("naziv", ""),
+                    "datum_isteka": prev_mem.get("datum_isteka", ""),
+                    "preostali_termini": prev_mem.get("preostali_termini", 0)
+                })
+    return {
+        "active_count": len(active_clients),
+        "inactive_count": len(inactive_clients),
+        "active_clients": active_clients,
+        "inactive_clients": inactive_clients
+    }
+
+@api_router.get("/admin/analytics/slots")
+async def admin_analytics_slots(request: Request):
+    """Slot popularity and occupancy from all bookings"""
+    await get_admin_user(request)
+    all_trainings = await db.trainings.find(
+        {"tip": {"$ne": "otkazan"}}, {"_id": 0, "datum": 1, "vrijeme": 1, "slot_id": 1}
+    ).to_list(100000)
+    total_bookings = len(all_trainings)
+    # Day popularity
+    day_names = ["Ponedjeljak", "Utorak", "Srijeda", "Cetvrtak", "Petak", "Subota", "Nedjelja"]
+    day_counts = {}
+    time_counts = {}
+    for t in all_trainings:
+        d = t.get("datum", "")
+        if isinstance(d, datetime):
+            d = d.strftime("%Y-%m-%d")
+        elif "T" in str(d):
+            d = str(d).split("T")[0]
+        else:
+            d = str(d)
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+            day_name = day_names[dt.weekday()]
+            day_counts[day_name] = day_counts.get(day_name, 0) + 1
+        except Exception:
+            pass
+        v = t.get("vrijeme", "")
+        if v:
+            time_counts[v] = time_counts.get(v, 0) + 1
+    popular_days = sorted(day_counts.items(), key=lambda x: x[1], reverse=True)
+    popular_times = sorted(time_counts.items(), key=lambda x: x[1], reverse=True)
+    # Average occupancy
+    total_slots = await db.schedule_slots.count_documents({})
+    avg_occupancy = round((total_bookings / total_slots * 100), 1) if total_slots > 0 else 0
+    return {
+        "total_bookings": total_bookings,
+        "total_slots": total_slots,
+        "average_occupancy_percent": avg_occupancy,
+        "popular_days": [{"dan": d, "rezervacija": c} for d, c in popular_days],
+        "popular_times": [{"vrijeme": t, "rezervacija": c} for t, c in popular_times]
+    }
+
 app.include_router(api_router)
 
 app.add_middleware(
