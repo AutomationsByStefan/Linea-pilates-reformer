@@ -354,6 +354,111 @@ async def create_session(request: Request, response: Response):
     
     return user_doc
 
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "1085993530181-g4cnkler2rr97b1sob4b57biqfj15id3.apps.googleusercontent.com")
+
+class GoogleExchangeRequest(BaseModel):
+    code: str
+    code_verifier: str
+    redirect_uri: str
+
+@api_router.post("/auth/google/exchange-code")
+async def google_exchange_code(data: GoogleExchangeRequest, response: Response):
+    """Exchange Google auth code for tokens, then login or register user"""
+    async with httpx.AsyncClient() as client:
+        # Exchange code for tokens
+        try:
+            token_res = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": data.code,
+                    "client_id": GOOGLE_CLIENT_ID,
+                    "code_verifier": data.code_verifier,
+                    "redirect_uri": data.redirect_uri,
+                    "grant_type": "authorization_code"
+                }
+            )
+            if token_res.status_code != 200:
+                logger.error(f"Google token exchange failed: {token_res.status_code} {token_res.text}")
+                raise HTTPException(status_code=401, detail="Google autentifikacija neuspjesna")
+            tokens = token_res.json()
+            access_token = tokens.get("access_token")
+            if not access_token:
+                raise HTTPException(status_code=401, detail="Nema access tokena od Google-a")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Google token exchange error: {e}")
+            raise HTTPException(status_code=500, detail="Greska pri Google autentifikaciji")
+
+        # Get user info from Google
+        try:
+            userinfo_res = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            if userinfo_res.status_code != 200:
+                raise HTTPException(status_code=401, detail="Neuspjesno dohvatanje korisnickih podataka")
+            google_user = userinfo_res.json()
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Google userinfo error: {e}")
+            raise HTTPException(status_code=500, detail="Greska pri dohvatanju podataka")
+
+    email = google_user.get("email")
+    name = google_user.get("name", "")
+    picture = google_user.get("picture")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email nije dostupan od Google-a")
+
+    # Check if user exists
+    existing_user = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing_user:
+        user_id = existing_user["user_id"]
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"name": name, "picture": picture, "last_activity": datetime.now(timezone.utc).isoformat()}}
+        )
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "picture": picture,
+            "is_admin": False,
+            "status": "active",
+            "notes": "",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_activity": datetime.now(timezone.utc).isoformat()
+        })
+
+    # Create session
+    session_token = str(uuid.uuid4())
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.delete_many({"user_id": user_id})
+    await db.user_sessions.insert_one({
+        "session_id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "session_token": session_token,
+        "expires_at": expires_at.isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=7 * 24 * 60 * 60,
+        path="/"
+    )
+
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "pin_hash": 0})
+    return user_doc
+
+
 @api_router.get("/auth/me")
 async def get_me(request: Request):
     """Get current authenticated user"""
