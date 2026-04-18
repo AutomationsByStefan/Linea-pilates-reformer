@@ -128,6 +128,7 @@ class AdminNoteRequest(BaseModel):
 class AdminFreezeRequest(BaseModel):
     start_date: str
     end_date: str
+    freeze_reason: str = ""
 
 class AdminStatusRequest(BaseModel):
     status: str  # "active", "pending", "expired", "frozen"
@@ -824,6 +825,21 @@ async def create_booking(data: BookingRequest, request: Request):
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.trainings.insert_one(training)
+    
+    # If this is user's first training on this membership, start the 35-day period from this date
+    first_training = await db.trainings.count_documents({
+        "user_id": user.user_id,
+        "tip": {"$in": ["predstojeći", "završen", "iskoristen"]}
+    })
+    if first_training == 1:
+        booking_date = datetime.strptime(data.datum, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        await db.memberships.update_one(
+            {"id": membership["id"]},
+            {"$set": {
+                "datum_pocetka": booking_date.isoformat(),
+                "datum_isteka": (booking_date + timedelta(days=35)).isoformat()
+            }}
+        )
     
     # Decrement membership slots
     await db.memberships.update_one(
@@ -1669,7 +1685,8 @@ async def admin_freeze_package(user_id: str, data: AdminFreezeRequest, request: 
         {"$set": {
             "tip": "zamrznuta",
             "freeze_start": data.start_date,
-            "freeze_end": data.end_date
+            "freeze_end": data.end_date,
+            "freeze_reason": data.freeze_reason
         }}
     )
     await db.users.update_one({"user_id": user_id}, {"$set": {"status": "frozen"}})
@@ -1703,7 +1720,7 @@ async def admin_unfreeze_package(user_id: str, request: Request):
     new_expiry = (original_expiry + timedelta(days=extra_days)).isoformat()
     await db.memberships.update_one(
         {"id": membership["id"]},
-        {"$set": {"tip": "aktivna", "datum_isteka": new_expiry}, "$unset": {"freeze_start": "", "freeze_end": ""}}
+        {"$set": {"tip": "aktivna", "datum_isteka": new_expiry}, "$unset": {"freeze_start": "", "freeze_end": "", "freeze_reason": ""}}
     )
     await db.users.update_one({"user_id": user_id}, {"$set": {"status": "active"}})
     return {"success": True, "message": f"Članarina je odmrznuta. Produžena za {extra_days} dana."}
@@ -1727,6 +1744,7 @@ async def admin_update_user_status(user_id: str, data: AdminStatusRequest, reque
 # ============== ADMIN FINANCIAL OVERVIEW ==============
 
 @api_router.get("/admin/financial")
+@api_router.get("/admin/finance")
 async def admin_financial_overview(request: Request):
     """Get financial overview including manual income"""
     await get_admin_user(request)
@@ -2218,6 +2236,7 @@ async def admin_get_users(request: Request):
             "membership_status": membership.get("tip", "-") if membership else "-",
             "freeze_start": membership.get("freeze_start") if membership else None,
             "freeze_end": membership.get("freeze_end") if membership else None,
+            "freeze_reason": membership.get("freeze_reason", "") if membership else "",
             "korisnik_status": user_status,
             "pending_request": pending_req,
             "disable_actions": is_archived
@@ -2378,12 +2397,14 @@ async def admin_generate_week(request: Request):
     else:
         start_date = datetime.now(timezone.utc)
     created = 0
+    saturday_times = ["08:00", "09:00", "10:00", "11:00"]
     for day_offset in range(days_count):
         date = start_date + timedelta(days=day_offset)
         if date.weekday() == 6:  # Skip Sunday (neradni dan)
             continue
         date_str = date.strftime("%Y-%m-%d")
-        for idx, time in enumerate(times):
+        day_times = saturday_times if date.weekday() == 5 else times
+        for idx, time in enumerate(day_times):
             slot_id = f"slot_{date_str.replace('-', '')}_{time.replace(':', '')}"
             existing = await db.schedule_slots.find_one({"id": slot_id})
             if not existing:
@@ -2768,13 +2789,15 @@ async def seed_schedule():
         return
     now = datetime.now(timezone.utc)
     times = ["08:00", "09:00", "10:00", "11:00", "17:00", "18:00", "19:00", "20:00"]
+    saturday_times = ["08:00", "09:00", "10:00", "11:00"]
     slots = []
     for day_offset in range(30):
         date = now + timedelta(days=day_offset)
         if date.weekday() == 6:  # Skip Sunday (neradni dan)
             continue
         date_str = date.strftime("%Y-%m-%d")
-        for idx, time_str in enumerate(times):
+        day_times = saturday_times if date.weekday() == 5 else times
+        for idx, time_str in enumerate(day_times):
             slot_id = f"slot_{date_str.replace('-', '')}_{time_str.replace(':', '')}"
             slots.append({
                 "id": slot_id,
@@ -2856,18 +2879,25 @@ async def seed_studio_users():
     await db.schedule_slots.update_many({}, {"$set": {"instruktor": "Marija Trisic"}})
     await db.trainings.update_many({}, {"$set": {"instruktor": "Marija Trisic"}})
     # Remove Sunday slots from schedule
-    all_slots = await db.schedule_slots.find({}, {"_id": 0, "id": 1, "datum": 1}).to_list(10000)
+    all_slots = await db.schedule_slots.find({}, {"_id": 0, "id": 1, "datum": 1, "vrijeme": 1}).to_list(10000)
     sunday_ids = []
+    saturday_afternoon_ids = []
+    saturday_afternoon_times = ["17:00", "18:00", "19:00", "20:00"]
     for s in all_slots:
         try:
             d = datetime.strptime(s["datum"], "%Y-%m-%d")
             if d.weekday() == 6:
                 sunday_ids.append(s["id"])
+            elif d.weekday() == 5 and s.get("vrijeme") in saturday_afternoon_times:
+                saturday_afternoon_ids.append(s["id"])
         except Exception:
             pass
     if sunday_ids:
         await db.schedule_slots.delete_many({"id": {"$in": sunday_ids}})
         logger.info(f"Removed {len(sunday_ids)} Sunday schedule slots")
+    if saturday_afternoon_ids:
+        await db.schedule_slots.delete_many({"id": {"$in": saturday_afternoon_ids}})
+        logger.info(f"Removed {len(saturday_afternoon_ids)} Saturday afternoon slots")
     logger.info("Studio users and instructor data updated")
 
 # ============== STARTUP / SHUTDOWN ==============
