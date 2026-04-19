@@ -1884,6 +1884,50 @@ async def admin_delete_reminder(reminder_id: str, request: Request):
 # ============== ADMIN CUSTOM MEMBERSHIP ==============
 
 @api_router.post("/admin/users/{user_id}/add-membership")
+async def add_membership_by_package(user_id: str, request: Request):
+    """Add membership using existing package ID"""
+    await get_admin_user(request)
+    body = await request.json()
+    package_id = body.get("package_id")
+    start_date = body.get("start_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    
+    pkg = await db.packages.find_one({"id": package_id}, {"_id": 0})
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Paket nije pronađen")
+    
+    start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    
+    await db.memberships.update_many(
+        {"user_id": user_id, "tip": "aktivna"},
+        {"$set": {"tip": "prethodna"}}
+    )
+    
+    membership = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "naziv": pkg.get("naziv", "Paket"),
+        "package_id": package_id,
+        "tip": "aktivna",
+        "preostali_termini": pkg.get("termini", 0),
+        "ukupni_termini": pkg.get("termini", 0),
+        "cijena": pkg.get("cijena", 0),
+        "datum_pocetka": start.isoformat(),
+        "datum_isteka": (start + timedelta(days=35)).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.memberships.insert_one(membership)
+    
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "type": "package_approved",
+        "title": "Paket aktiviran",
+        "message": f"Vaš paket {membership['naziv']} je aktiviran! Imate {membership['ukupni_termini']} termina.",
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"success": True, "message": f"Članarina {membership['naziv']} dodana."}
 @api_router.post("/admin/users/{user_id}/custom-membership")
 async def admin_create_custom_membership(user_id: str, data: AdminCustomMembershipRequest, request: Request):
     """Admin creates a custom membership directly for a user (bypassing package requests)"""
