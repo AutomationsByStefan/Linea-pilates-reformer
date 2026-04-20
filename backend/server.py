@@ -1802,6 +1802,41 @@ async def admin_financial_overview(request: Request):
         "novi_klijenti_mjesec": new_clients,
         "najprodavaniji": max(by_package.items(), key=lambda x: x[1]["count"])[0] if by_package else "-"
     }
+    
+@api_router.get("/admin/stats")
+async def admin_stats(request: Request):
+    """Get admin dashboard stats"""
+    await get_admin_user(request)
+    now = datetime.now(timezone.utc)
+    current_month = now.strftime("%Y-%m")
+    
+    total_users = await db.users.count_documents({"is_admin": {"$ne": True}})
+    active_memberships = await db.memberships.count_documents({
+        "tip": "aktivna",
+        "preostali_termini": {"$gt": 0},
+        "datum_isteka": {"$gt": now.isoformat()}
+    })
+    pending_requests = await db.package_requests.count_documents({"status": "pending"})
+    
+    today = now.strftime("%Y-%m-%d")
+    today_bookings = await db.trainings.count_documents({
+        "datum": today,
+        "tip": {"$nin": ["otkazan", "cancelled"]}
+    })
+    
+    this_month_revenue = await db.package_requests.find(
+        {"status": "approved", "approved_at": {"$regex": f"^{current_month}"}},
+        {"_id": 0}
+    ).to_list(1000)
+    revenue = sum(r.get("package_price", 0) for r in this_month_revenue)
+    
+    return {
+        "total_users": total_users,
+        "active_memberships": active_memberships,
+        "pending_requests": pending_requests,
+        "today_bookings": today_bookings,
+        "this_month_revenue": revenue
+    }
 
 # ============== ADMIN MANUAL INCOME ==============
 
