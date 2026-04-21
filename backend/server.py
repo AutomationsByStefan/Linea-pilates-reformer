@@ -2904,6 +2904,9 @@ async def seed_studio_users():
 
 @app.on_event("startup")
 async def startup():
+    masked = mongo_url[:20] + "***" + mongo_url[-20:] if len(mongo_url) > 40 else mongo_url
+    logger.info(f"MongoDB URL: {masked}")
+    logger.info(f"MongoDB DB_NAME: {os.environ['DB_NAME']}")
     await seed_packages()
     await seed_admin()
     await seed_schedule()
