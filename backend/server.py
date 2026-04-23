@@ -2462,7 +2462,8 @@ async def admin_generate_week(request: Request):
         if date.weekday() == 6:  # Skip Sunday (neradni dan)
             continue
         date_str = date.strftime("%Y-%m-%d")
-        for idx, time in enumerate(times):
+        day_times = ["08:00", "09:00", "10:00", "11:00"] if date.weekday() == 5 else times
+        for idx, time in enumerate(day_times):
             slot_id = f"slot_{date_str.replace('-', '')}_{time.replace(':', '')}"
             existing = await db.schedule_slots.find_one({"id": slot_id})
             if not existing:
