@@ -1748,31 +1748,31 @@ async def admin_financial_overview(request: Request):
     # Monthly revenue for past 12 months
     
     monthly_revenue = []
+    start_date = datetime(2026, 3, 1, tzinfo=timezone.utc)
     current = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-
     while current >= start_date:
-    month_str = current.strftime("%Y-%m")
-    month_requests = await db.package_requests.find(
-        {"status": "approved", "approved_at": {"$regex": f"^{month_str}"}},
-        {"_id": 0}
-    ).to_list(1000)
-    pkg_rev = sum(r.get("package_price", 0) for r in month_requests)
-    month_manual = await db.manual_income.find(
-        {"datum": {"$regex": f"^{month_str}"}},
-        {"_id": 0}
-    ).to_list(1000)
-    manual_rev = sum(m.get("iznos", 0) for m in month_manual)
-    monthly_revenue.append({
-        "month": month_str,
-        "revenue": pkg_rev + manual_rev,
-        "pkg_revenue": pkg_rev,
-        "manual_revenue": manual_rev,
-        "count": len(month_requests)
-    })
-    if current.month == 1:
-        current = current.replace(year=current.year - 1, month=12)
-    else:
-        current = current.replace(month=current.month - 1)
+        month_str = current.strftime("%Y-%m")
+        month_requests = await db.package_requests.find(
+            {"status": "approved", "approved_at": {"$regex": f"^{month_str}"}},
+            {"_id": 0}
+        ).to_list(1000)
+        pkg_rev = sum(r.get("package_price", 0) for r in month_requests)
+        month_manual = await db.manual_income.find(
+            {"datum": {"$regex": f"^{month_str}"}},
+            {"_id": 0}
+        ).to_list(1000)
+        manual_rev = sum(m.get("iznos", 0) for m in month_manual)
+        monthly_revenue.append({
+            "month": month_str,
+            "revenue": pkg_rev + manual_rev,
+            "pkg_revenue": pkg_rev,
+            "manual_revenue": manual_rev,
+            "count": len(month_requests)
+        })
+        if current.month == 1:
+            current = current.replace(year=current.year - 1, month=12)
+        else:
+            current = current.replace(month=current.month - 1)
 
     # Revenue by package type
     all_approved = await db.package_requests.find({"status": "approved"}, {"_id": 0}).to_list(5000)
