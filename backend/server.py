@@ -1747,7 +1747,9 @@ async def admin_financial_overview(request: Request):
     this_month_revenue = this_month_pkg_revenue + this_month_manual_revenue
     # Monthly revenue for past 12 months
     monthly_revenue = []
-    for i in range(12):
+    start_date = datetime(2026, 3, 28, tzinfo=timezone.utc)
+        months_since_start = (now.year - start_date.year) * 12 + (now.month - start_date.month) + 1
+        for i in range(months_since_start):
         month_dt = now - timedelta(days=30 * i)
         month_str = month_dt.strftime("%Y-%m")
         # Check archive first
