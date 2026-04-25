@@ -1747,26 +1747,33 @@ async def admin_financial_overview(request: Request):
     this_month_revenue = this_month_pkg_revenue + this_month_manual_revenue
     # Monthly revenue for past 12 months
     monthly_revenue = []
-    start_date = datetime(2026, 3, 28, tzinfo=timezone.utc)
-        months_since_start = (now.year - start_date.year) * 12 + (now.month - start_date.month) + 1
-        for i in range(months_since_start):
-        month_dt = now - timedelta(days=30 * i)
-        month_str = month_dt.strftime("%Y-%m")
-        # Check archive first
-        archived = await db.revenue_archive.find_one({"month": month_str}, {"_id": 0})
-        if archived and i > 0:
-            monthly_revenue.append(archived)
-        else:
-            month_requests = await db.package_requests.find(
-                {"status": "approved", "approved_at": {"$regex": f"^{month_str}"}},
-                {"_id": 0}
-            ).to_list(1000)
-            pkg_rev = sum(r.get("package_price", 0) for r in month_requests)
-            month_manual = await db.manual_income.find(
-                {"datum": {"$regex": f"^{month_str}"}},
-                {"_id": 0}
-            ).to_list(1000)
-            manual_rev = sum(m.get("iznos", 0) for m in month_manual)
+    start_date = datetime(2026, 3, 1, tzinfo=timezone.utc)
+monthly_revenue = []
+current = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+
+while current >= start_date:
+    month_str = current.strftime("%Y-%m")
+    month_requests = await db.package_requests.find(
+        {"status": "approved", "approved_at": {"$regex": f"^{month_str}"}},
+        {"_id": 0}
+    ).to_list(1000)
+    pkg_rev = sum(r.get("package_price", 0) for r in month_requests)
+    month_manual = await db.manual_income.find(
+        {"datum": {"$regex": f"^{month_str}"}},
+        {"_id": 0}
+    ).to_list(1000)
+    manual_rev = sum(m.get("iznos", 0) for m in month_manual)
+    monthly_revenue.append({
+        "month": month_str,
+        "revenue": pkg_rev + manual_rev,
+        "pkg_revenue": pkg_rev,
+        "manual_revenue": manual_rev,
+        "count": len(month_requests)
+    })
+    if current.month == 1:
+        current = current.replace(year=current.year - 1, month=12)
+    else:
+        current = current.replace(month=current.month - 1)
             monthly_revenue.append({
                 "month": month_str,
                 "revenue": pkg_rev + manual_rev,
@@ -1796,7 +1803,7 @@ async def admin_financial_overview(request: Request):
         "ovaj_mjesec_prihod": this_month_revenue,
         "ovaj_mjesec_paketi": this_month_pkg_revenue,
         "ovaj_mjesec_rucni": this_month_manual_revenue,
-        "mjesecni_prihod": list(reversed(monthly_revenue)),
+        "mjesecni_prihod": monthly_revenue,
         "prihod_po_paketu": [{"naziv": k, **v} for k, v in by_package.items()],
         "ukupno_klijenata": total_users,
         "aktivne_clanarine": active_memberships,
