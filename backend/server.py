@@ -1774,13 +1774,7 @@ while current >= start_date:
         current = current.replace(year=current.year - 1, month=12)
     else:
         current = current.replace(month=current.month - 1)
-            monthly_revenue.append({
-                "month": month_str,
-                "revenue": pkg_rev + manual_rev,
-                "pkg_revenue": pkg_rev,
-                "manual_revenue": manual_rev,
-                "count": len(month_requests)
-            })
+
     # Revenue by package type
     all_approved = await db.package_requests.find({"status": "approved"}, {"_id": 0}).to_list(5000)
     by_package = {}
