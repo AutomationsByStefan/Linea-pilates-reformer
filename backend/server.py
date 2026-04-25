@@ -1746,12 +1746,11 @@ async def admin_financial_overview(request: Request):
     this_month_manual_revenue = sum(m.get("iznos", 0) for m in this_month_manual)
     this_month_revenue = this_month_pkg_revenue + this_month_manual_revenue
     # Monthly revenue for past 12 months
+    
     monthly_revenue = []
-    start_date = datetime(2026, 3, 1, tzinfo=timezone.utc)
-monthly_revenue = []
-current = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    current = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
 
-while current >= start_date:
+    while current >= start_date:
     month_str = current.strftime("%Y-%m")
     month_requests = await db.package_requests.find(
         {"status": "approved", "approved_at": {"$regex": f"^{month_str}"}},
