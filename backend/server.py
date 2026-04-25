@@ -28,6 +28,54 @@ app = FastAPI()
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
+# ============== EXPO PUSH NOTIFICATIONS ==============
+
+async def send_push_notification(user_id: str, title: str, message: str, data: dict = None):
+    """Send push notification via Expo Push API"""
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "push_token": 1})
+    if not user or not user.get("push_token"):
+        logger.info(f"No push token for user {user_id}, skipping push")
+        return False
+    token = user["push_token"]
+    if not token.startswith("ExponentPushToken["):
+        logger.warning(f"Invalid push token format for user {user_id}")
+        return False
+    payload = {
+        "to": token,
+        "sound": "default",
+        "title": title,
+        "body": message,
+    }
+    if data:
+        payload["data"] = data
+    try:
+        async with httpx.AsyncClient() as client_http:
+            res = await client_http.post(
+                "https://exp.host/--/api/v2/push/send",
+                json=payload,
+                headers={"Accept": "application/json", "Content-Type": "application/json"}
+            )
+            if res.status_code == 200:
+                logger.info(f"Push sent to user {user_id}: {title}")
+                return True
+            else:
+                logger.error(f"Push failed for user {user_id}: {res.status_code} {res.text}")
+                return False
+    except Exception as e:
+        logger.error(f"Push notification error for user {user_id}: {e}")
+        return False
+
+async def send_push_to_all_users(title: str, message: str, data: dict = None):
+    """Send push notification to all users with push tokens"""
+    users = await db.users.find({"push_token": {"$exists": True, "$ne": ""}}, {"_id": 0, "user_id": 1, "push_token": 1}).to_list(10000)
+    sent = 0
+    for u in users:
+        result = await send_push_notification(u["user_id"], title, message, data)
+        if result:
+            sent += 1
+    return sent
+
+
 # ============== MODELS ==============
 
 class User(BaseModel):
@@ -677,6 +725,22 @@ async def get_active_memberships(request: Request):
         m["status"] = "aktivna" if is_valid else "istekla"
         result.append(m)
     return result
+
+
+# ============== PUSH TOKEN ==============
+
+class PushTokenRequest(BaseModel):
+    push_token: str
+
+@api_router.post("/user/push-token")
+async def save_push_token(data: PushTokenRequest, request: Request):
+    """Save user's Expo push token"""
+    user = await get_current_user(request)
+    await db.users.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"push_token": data.push_token}}
+    )
+    return {"success": True}
 
 # ============== TRAININGS ==============
 
@@ -1626,6 +1690,12 @@ async def admin_approve_package(request_id: str, request: Request):
         "read": False,
         "created_at": now.isoformat()
     })
+    # Send push notification
+    await send_push_notification(
+        pkg_req["user_id"],
+        "Paket odobren",
+        f"Vaš paket {pkg_req['package_name']} je aktiviran! Imate {pkg_req['package_sessions']} termina."
+    )
     return {"success": True, "message": f"Paket {pkg_req['package_name']} je aktiviran za korisnika {pkg_req['user_name']}."}
 
 @api_router.post("/admin/package-requests/{request_id}/reject")
@@ -2378,6 +2448,12 @@ async def admin_cancel_booking(training_id: str, data: AdminCancelRequest, reque
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.notifications.insert_one(notification)
+    # Send push notification
+    await send_push_notification(
+        training["user_id"],
+        "Trening otkazan",
+        f"Vaš termin za {training_datum} u {training_vrijeme} je otkazan."
+    )
     return {"success": True, "message": "Rezervacija je uspješno otkazana. Termin je vraćen korisniku."}
 
 # ============== ADMIN BULK SCHEDULE ==============
@@ -2640,6 +2716,48 @@ async def admin_analytics_slots(request: Request):
         "popular_times": [{"vrijeme": t, "rezervacija": c} for t, c in popular_times]
     }
 
+
+# ============== ADMIN PUSH NOTIFICATIONS ==============
+
+class AdminSendNotificationRequest(BaseModel):
+    user_id: str = None  # None = send to all
+    title: str
+    message: str
+
+@api_router.post("/admin/send-notification")
+async def admin_send_notification(data: AdminSendNotificationRequest, request: Request):
+    """Admin sends push notification to specific user or all users"""
+    await get_admin_user(request)
+    now = datetime.now(timezone.utc)
+    if data.user_id:
+        # Send to specific user
+        await send_push_notification(data.user_id, data.title, data.message)
+        await db.notifications.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": data.user_id,
+            "type": "admin_message",
+            "title": data.title,
+            "message": data.message,
+            "read": False,
+            "created_at": now.isoformat()
+        })
+        return {"success": True, "message": "Notifikacija poslana korisniku"}
+    else:
+        # Send to all users
+        sent = await send_push_to_all_users(data.title, data.message)
+        all_users = await db.users.find({"is_admin": {"$ne": True}}, {"_id": 0, "user_id": 1}).to_list(10000)
+        for u in all_users:
+            await db.notifications.insert_one({
+                "id": str(uuid.uuid4()),
+                "user_id": u["user_id"],
+                "type": "admin_message",
+                "title": data.title,
+                "message": data.message,
+                "read": False,
+                "created_at": now.isoformat()
+            })
+        return {"success": True, "message": f"Notifikacija poslana svim korisnicima ({sent} push-eva)"}
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -2687,6 +2805,11 @@ async def check_day_before_reminders():
                     "read": False,
                     "created_at": datetime.now(timezone.utc).isoformat()
                 })
+                await send_push_notification(
+                    training["user_id"],
+                    "Sutrašnji trening",
+                    f"Sutra u {training['vrijeme']} te očekuje Pilates Reformer trening. Vidimo se!"
+                )
         logger.info(f"Day-before check: {len(trainings)} trainings for {tomorrow}")
     except Exception as e:
         logger.error(f"Day-before reminder error: {e}")
