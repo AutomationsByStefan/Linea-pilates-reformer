@@ -33,6 +33,8 @@ Mobile-first web application for Linea Pilates Reformer Studio with role-based a
 - [x] Expo Push Notifications integration
 - [x] APScheduler daily reminder job (day-before + inactivity)
 - [x] **APScheduler auto-renewal reminder** (3 days before expiry) — idempotent, logs to `renewal_reminders_log`
+- [x] **Conversion tracking** — auto-marks renewal_reminders_log entries as `renewed_after_reminder=true` when client renews within 7 days (via package_request OR custom_membership)
+- [x] **Add past training** (`POST /admin/users/{user_id}/add-past-training`) — admin manually logs historical trainings (tip='iskoristen', instruktor='Marija Trisic')
 
 ## Frontend Architecture (Admin)
 ```

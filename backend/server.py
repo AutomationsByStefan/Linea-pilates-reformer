@@ -1612,6 +1612,8 @@ async def request_package(data: PackageRequestModel, request: Request):
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.package_requests.insert_one(package_request)
+    # Conversion tracking: mark recent renewal reminders as converted (within 7 days)
+    await mark_renewal_conversions(user.user_id, "package_request")
     # Create admin notification
     admins = await db.users.find({"is_admin": True}, {"_id": 0}).to_list(10)
     for admin in admins:
@@ -2005,6 +2007,8 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
         "created_at": now.isoformat()
     }
     await db.memberships.insert_one(membership)
+    # Conversion tracking: mark recent renewal reminders as converted (within 7 days)
+    await mark_renewal_conversions(user_id, "custom_membership")
     # Notify user
     await db.notifications.insert_one({
         "id": str(uuid.uuid4()),
@@ -2032,6 +2036,62 @@ async def admin_get_membership_history(user_id: str, request: Request):
         {"user_id": user_id}, {"_id": 0}
     ).sort("created_at", -1).to_list(100)
     return {"memberships": memberships, "requests": requests}
+
+
+class AdminAddPastTrainingRequest(BaseModel):
+    datum: str  # YYYY-MM-DD
+    vrijeme: str  # HH:MM
+
+
+VALID_PAST_TRAINING_TIMES = {"08:00", "09:00", "10:00", "11:00", "17:00", "18:00", "19:00", "20:00"}
+
+
+@api_router.post("/admin/users/{user_id}/add-past-training")
+async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingRequest, request: Request):
+    """Admin manually logs a past training that the user attended (e.g. legacy data import).
+
+    Creates a training entry with tip='iskoristen' so it shows up in the user's history
+    without affecting the live booking schedule or membership counters.
+    """
+    admin_user = await get_admin_user(request)
+
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "name": 1})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
+
+    # Validate date format
+    try:
+        date_obj = datetime.strptime(data.datum, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Nevažeći format datuma. Koristite YYYY-MM-DD.")
+
+    if data.vrijeme not in VALID_PAST_TRAINING_TIMES:
+        raise HTTPException(
+            status_code=400,
+            detail="Nevažeće vrijeme. Dozvoljeno: " + ", ".join(sorted(VALID_PAST_TRAINING_TIMES)),
+        )
+
+    now = datetime.now(timezone.utc)
+    training = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "datum": date_obj.isoformat(),
+        "vrijeme": data.vrijeme,
+        "instruktor": "Marija Trisic",
+        "tip": "iskoristen",
+        "trajanje": 50,
+        "feedback_submitted": False,
+        "manually_added": True,
+        "added_by": admin_user.get("name", "Admin"),
+        "created_at": now.isoformat(),
+    }
+    await db.trainings.insert_one(training)
+
+    return {
+        "success": True,
+        "message": f"Prošli trening dodan za {user_doc.get('name', 'korisnika')} ({data.datum} u {data.vrijeme}).",
+        "training": {k: v for k, v in training.items() if k != "_id"},
+    }
 
 # ============== ADMIN PACKAGES CRUD ==============
 
@@ -2864,6 +2924,39 @@ async def check_inactivity_reminders():
         logger.info(f"Inactivity check: {len(users)} inactive users checked")
     except Exception as e:
         logger.error(f"Inactivity reminder error: {e}")
+
+
+async def mark_renewal_conversions(user_id: str, source: str):
+    """Mark recent renewal_reminders_log entries as converted when user renews.
+
+    Called whenever a user creates a package_request OR admin creates a custom membership.
+    Looks back 7 days for unmarked log entries belonging to this user and tags them with
+    renewed_after_reminder=true, renewed_at, and renewal_method.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        seven_days_ago = (now - timedelta(days=7)).isoformat()
+        result = await db.renewal_reminders_log.update_many(
+            {
+                "user_id": user_id,
+                "renewed_after_reminder": {"$ne": True},
+                "sent_at": {"$gte": seven_days_ago},
+            },
+            {
+                "$set": {
+                    "renewed_after_reminder": True,
+                    "renewed_at": now.isoformat(),
+                    "renewal_method": source,
+                }
+            },
+        )
+        if result.modified_count > 0:
+            logger.info(
+                f"Conversion: marked {result.modified_count} renewal reminder(s) "
+                f"as converted for user {user_id} via {source}"
+            )
+    except Exception as e:
+        logger.error(f"Conversion tracking error for {user_id}: {e}")
 
 
 async def check_renewal_reminders():

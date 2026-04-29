@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, CreditCard, MinusCircle, Snowflake, Sun,
-  FileText, Plus, Activity, Award
+  FileText, Plus, Activity, Award, CalendarPlus
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
@@ -11,7 +11,7 @@ import { SectionCard } from './components/SectionCard';
 import { ClientProfileHeader } from './components/ClientProfileHeader';
 import { ClientMembershipDetail } from './components/ClientMembershipDetail';
 import { ClientHistoryLists } from './components/ClientHistoryLists';
-import { FreezeDialog, NotesDialog, CustomMembershipDialog } from './AdminUserDialogs';
+import { FreezeDialog, NotesDialog, CustomMembershipDialog, PastTrainingDialog } from './AdminUserDialogs';
 
 const API = process.env.REACT_APP_BACKEND_URL + '/api';
 
@@ -27,11 +27,14 @@ function AdminClientProfilePage() {
   const [freezeOpen, setFreezeOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
+  const [pastTrainingOpen, setPastTrainingOpen] = useState(false);
   const [freezeStart, setFreezeStart] = useState('');
   const [freezeEnd, setFreezeEnd] = useState('');
   const [noteText, setNoteText] = useState('');
   const [selectedPkg, setSelectedPkg] = useState('');
   const [customForm, setCustomForm] = useState({ naziv: '', cijena: '', termini: '', trajanje_dana: '30' });
+  const [pastDatum, setPastDatum] = useState('');
+  const [pastVrijeme, setPastVrijeme] = useState('');
 
   function fetchUser() {
     Promise.all([
@@ -115,6 +118,23 @@ function AdminClientProfilePage() {
       setCustomOpen(false);
       setSelectedPkg('');
       setCustomForm({ naziv: '', cijena: '', termini: '', trajanje_dana: '30' });
+    }
+  };
+
+  const handleAddPastTraining = async () => {
+    if (!pastDatum || !pastVrijeme) {
+      toast.error('Odaberite datum i vrijeme');
+      return;
+    }
+    const ok = await callJson(API + '/admin/users/' + userId + '/add-past-training', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ datum: pastDatum, vrijeme: pastVrijeme }),
+    });
+    if (ok) {
+      setPastTrainingOpen(false);
+      setPastDatum('');
+      setPastVrijeme('');
     }
   };
 
@@ -207,6 +227,14 @@ function AdminClientProfilePage() {
             >
               <FileText className="w-3 h-3 mr-1" /> Bilješka
             </Button>
+            <Button
+              onClick={() => { setPastDatum(''); setPastVrijeme(''); setPastTrainingOpen(true); }}
+              variant="ghost"
+              className="text-[#C4A574] hover:bg-[#C4A574]/10 text-xs"
+              data-testid="add-past-training-btn"
+            >
+              <CalendarPlus className="w-3 h-3 mr-1" /> Dodaj prošli trening
+            </Button>
           </div>
         </SectionCard>
       )}
@@ -243,6 +271,17 @@ function AdminClientProfilePage() {
         setCustomForm={setCustomForm}
         onClose={() => setCustomOpen(false)}
         onConfirm={handleCreateCustom}
+        loading={actionLoading}
+      />
+      <PastTrainingDialog
+        open={pastTrainingOpen}
+        user={user}
+        datum={pastDatum}
+        vrijeme={pastVrijeme}
+        setDatum={setPastDatum}
+        setVrijeme={setPastVrijeme}
+        onClose={() => setPastTrainingOpen(false)}
+        onConfirm={handleAddPastTraining}
         loading={actionLoading}
       />
     </div>

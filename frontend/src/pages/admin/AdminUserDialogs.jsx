@@ -193,3 +193,54 @@ export function HistoryDialog({ open, user, historyData, onClose }) {
     </Dialog>
   );
 }
+
+
+export const PAST_TRAINING_TIMES = ['08:00', '09:00', '10:00', '11:00', '17:00', '18:00', '19:00', '20:00'];
+
+export function PastTrainingDialog({ open, user, datum, vrijeme, setDatum, setVrijeme, onClose, onConfirm, loading }) {
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="bg-[#1a1a2e] border-white/10 text-white max-w-md">
+        <DialogHeader><DialogTitle>Dodaj prošli trening</DialogTitle></DialogHeader>
+        <div className="space-y-4 py-2">
+          <p className="text-white/50 text-sm">Korisnik: {user ? user.name : ''}</p>
+          <div>
+            <label className="text-white/60 text-sm mb-1 block">Datum</label>
+            <Input
+              type="date"
+              value={datum}
+              onChange={(e) => setDatum(e.target.value)}
+              className="h-10 bg-white/10 border-white/20 text-white"
+              data-testid="past-training-date-input"
+            />
+          </div>
+          <div>
+            <label className="text-white/60 text-sm mb-1 block">Vrijeme</label>
+            <select
+              value={vrijeme}
+              onChange={(e) => setVrijeme(e.target.value)}
+              className="w-full h-10 rounded-md bg-white/10 border border-white/20 text-white px-3 text-sm"
+              data-testid="past-training-time-select"
+            >
+              <option value="" className="bg-[#1a1a2e]">— Odaberite —</option>
+              {PAST_TRAINING_TIMES.map((t) => (
+                <option key={t} value={t} className="bg-[#1a1a2e]">{t}</option>
+              ))}
+            </select>
+          </div>
+          <p className="text-white/40 text-[11px]">
+            Trening će biti zabilježen kao iskorišten kod instruktora Marija Trišić.
+          </p>
+          <Button
+            onClick={onConfirm}
+            disabled={loading}
+            className="w-full h-11 bg-[#C4A574] hover:bg-[#A68B5B] text-white"
+            data-testid="confirm-past-training-btn"
+          >
+            {loading ? 'Dodavanje...' : 'Dodaj trening'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
