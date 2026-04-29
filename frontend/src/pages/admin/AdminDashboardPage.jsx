@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Users, CreditCard, CalendarDays, BookOpen, Check, X, AlertTriangle,
+  Users, CreditCard, CalendarDays, BookOpen, Check, X,
   DollarSign, Plus, Trash2, CheckCircle2, StickyNote, TrendingUp, Activity
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { StatCard } from './components/StatCard';
 import { SectionCard } from './components/SectionCard';
 import { RevenueLineChart } from './components/RevenueLineChart';
+import { RenewalAlerts } from './components/RenewalAlerts';
 
 const API = process.env.REACT_APP_BACKEND_URL + '/api';
 
@@ -170,7 +171,6 @@ function AdminDashboardPage() {
   const pendingRequests = stats ? (stats.posljednji_zahtjevi || []) : [];
   const expiringAlerts = alerts ? (alerts.isticu_uskoro || []) : [];
   const lowSessionAlerts = alerts ? (alerts.malo_termina || []) : [];
-  const totalAlerts = expiringAlerts.length + lowSessionAlerts.length;
   const monthlyData = financial ? (financial.mjesecni_prihod || []) : [];
   const recentUsers = stats ? (stats.posljednji_korisnici || []) : [];
   const activeReminders = reminders.filter((r) => !r.zavrseno);
@@ -264,36 +264,8 @@ function AdminDashboardPage() {
         </SectionCard>
       )}
 
-      {/* Alerts */}
-      {totalAlerts > 0 && (
-        <SectionCard
-          testId="alerts-section"
-          title={`Upozorenja (${totalAlerts})`}
-          icon={AlertTriangle}
-          accent="amber"
-        >
-          <div className="space-y-2">
-            {expiringAlerts.map((a) => (
-              <div key={a.id} className="bg-white/5 rounded-xl p-3 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1">
-                <div>
-                  <p className="text-white text-xs">{a.korisnik?.name || 'Nepoznat'}</p>
-                  <p className="text-amber-400/70 text-[10px]">Članarina ističe {formatDateBS(a.datum_isteka)}</p>
-                </div>
-                <p className="text-white/40 text-[10px]">{a.korisnik?.phone || ''}</p>
-              </div>
-            ))}
-            {lowSessionAlerts.map((a) => (
-              <div key={a.id} className="bg-white/5 rounded-xl p-3 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1">
-                <div>
-                  <p className="text-white text-xs">{a.korisnik?.name || 'Nepoznat'}</p>
-                  <p className="text-orange-400/70 text-[10px]">Preostalo {a.preostali_termini} termina</p>
-                </div>
-                <p className="text-white/40 text-[10px]">{a.korisnik?.phone || ''}</p>
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-      )}
+      {/* Renewal CTA — replaces basic alerts with action button per client */}
+      <RenewalAlerts expiring={expiringAlerts} lowSessions={lowSessionAlerts} />
 
       {/* Two columns: Reminders + Recent users */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
