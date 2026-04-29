@@ -22,9 +22,11 @@ import InvitePage from "@/pages/InvitePage";
 import AdminLoginPage from "@/pages/admin/AdminLoginPage";
 import AdminLayout from "@/pages/admin/AdminLayout";
 import AdminDashboardPage from "@/pages/admin/AdminDashboardPage";
+import AdminFinancePage from "@/pages/admin/AdminFinancePage";
 import AdminSchedulePage from "@/pages/admin/AdminSchedulePage";
 import AdminBookingsPage from "@/pages/admin/AdminBookingsPage";
 import AdminUsersPage from "@/pages/admin/AdminUsersPage";
+import AdminClientProfilePage from "@/pages/admin/AdminClientProfilePage";
 
 // Components
 import Layout from "@/components/Layout";
@@ -198,9 +200,11 @@ function AppRouter() {
       {/* Admin routes - AdminLayout handles its own auth */}
       <Route path="/admin/login" element={<AdminLoginPage />} />
       <Route path="/admin" element={<AdminLayout><AdminDashboardPage /></AdminLayout>} />
+      <Route path="/admin/finansije" element={<AdminLayout><AdminFinancePage /></AdminLayout>} />
       <Route path="/admin/raspored" element={<AdminLayout><AdminSchedulePage /></AdminLayout>} />
       <Route path="/admin/rezervacije" element={<AdminLayout><AdminBookingsPage /></AdminLayout>} />
       <Route path="/admin/korisnici" element={<AdminLayout><AdminUsersPage /></AdminLayout>} />
+      <Route path="/admin/korisnici/:userId" element={<AdminLayout><AdminClientProfilePage /></AdminLayout>} />
 
       {/* Fallback to login */}
       <Route path="*" element={<LoginPage />} />

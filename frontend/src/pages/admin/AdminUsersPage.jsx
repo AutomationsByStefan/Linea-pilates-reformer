@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Search, MinusCircle, Snowflake, Sun, FileText, ChevronDown, ChevronUp, Plus, History } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Search, MinusCircle, Snowflake, Sun, FileText, ChevronDown, ChevronUp, Plus, History, ExternalLink } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
@@ -19,9 +20,12 @@ var STATUS_MAP = {
   'expired': { label: 'Istekao', color: 'bg-red-500/20 text-red-400' },
 };
 
-function UserActions({ u, actionLoading, onDeduct, onFreeze, onUnfreeze, onCustom, onHistory, onNotes }) {
+function UserActions({ u, actionLoading, onDeduct, onFreeze, onUnfreeze, onCustom, onHistory, onNotes, onProfile }) {
   return (
     <div className="flex flex-wrap gap-2">
+      <Button onClick={onProfile} className="h-7 md:h-8 bg-[#C4A574]/20 hover:bg-[#C4A574]/30 text-[#C4A574] text-[10px] md:text-xs" data-testid="open-profile-btn">
+        <ExternalLink className="w-3 h-3 mr-1" /> Otvori profil
+      </Button>
       {u.membership_status === 'aktivna' && u.preostali_termini > 0 && (
         <Button onClick={onDeduct} disabled={actionLoading} className="h-7 md:h-8 bg-amber-600 hover:bg-amber-700 text-white text-[10px] md:text-xs" data-testid="deduct-session-btn">
           <MinusCircle className="w-3 h-3 mr-1" /> Oduzmi termin
@@ -66,6 +70,7 @@ function UserDetails({ u }) {
 }
 
 function AdminUsersPage() {
+  const navigate = useNavigate();
   const [users, setUsers] = useState([]);
   const [packages, setPackages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -219,6 +224,7 @@ function AdminUsersPage() {
                   <div className="px-3 md:px-4 pb-4 border-t border-white/5 pt-3 space-y-3">
                     <UserDetails u={u} />
                     <UserActions u={u} actionLoading={actionLoading}
+                      onProfile={function() { navigate('/admin/korisnici/' + u.user_id); }}
                       onDeduct={function() { handleDeduct(u.user_id); }}
                       onFreeze={function() { setFreezeDialog(u); setFreezeStart(''); setFreezeEnd(''); }}
                       onUnfreeze={function() { handleUnfreeze(u.user_id); }}

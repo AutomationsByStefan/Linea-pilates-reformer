@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, CalendarDays, Users, BookOpen, LogOut, Menu, X, Bell, DollarSign, AlertTriangle } from 'lucide-react';
+import { LayoutDashboard, CalendarDays, Users, BookOpen, LogOut, Menu, X, DollarSign } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -65,12 +65,16 @@ const AdminLayout = ({ children, user: passedUser }) => {
 
   const navItems = [
     { path: '/admin', label: 'Kontrolna tabla', icon: LayoutDashboard },
+    { path: '/admin/finansije', label: 'Finansije', icon: DollarSign },
     { path: '/admin/raspored', label: 'Raspored', icon: CalendarDays },
     { path: '/admin/rezervacije', label: 'Rezervacije', icon: BookOpen },
     { path: '/admin/korisnici', label: 'Korisnici', icon: Users },
   ];
 
-  const isActive = (path) => location.pathname === path;
+  const isActive = (path) => {
+    if (path === '/admin') return location.pathname === '/admin';
+    return location.pathname.startsWith(path);
+  };
 
   if (loading) {
     return <div className="min-h-screen bg-[#0f0f1a] flex items-center justify-center">
