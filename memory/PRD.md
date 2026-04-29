@@ -31,7 +31,8 @@ Mobile-first web application for Linea Pilates Reformer Studio with role-based a
 - [x] Modular chart components (StatCard, RevenueLineChart, PackageDoughnut, OccupancyBarChart, SectionCard)
 - [x] Backend: real-time analytics, finance breakdown, freeze/unfreeze, base64 photos, refund logic
 - [x] Expo Push Notifications integration
-- [x] APScheduler daily reminder job
+- [x] APScheduler daily reminder job (day-before + inactivity)
+- [x] **APScheduler auto-renewal reminder** (3 days before expiry) — idempotent, logs to `renewal_reminders_log`
 
 ## Frontend Architecture (Admin)
 ```

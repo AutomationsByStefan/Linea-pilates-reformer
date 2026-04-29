@@ -2758,6 +2758,23 @@ async def admin_send_notification(data: AdminSendNotificationRequest, request: R
             })
         return {"success": True, "message": f"Notifikacija poslana svim korisnicima ({sent} push-eva)"}
 
+
+@api_router.get("/admin/renewal-reminders/log")
+async def admin_get_renewal_log(request: Request):
+    """Get history of automatic renewal reminders sent."""
+    await get_admin_user(request)
+    entries = await db.renewal_reminders_log.find({}, {"_id": 0}).sort("sent_at", -1).to_list(500)
+    return {"count": len(entries), "entries": entries}
+
+
+@api_router.post("/admin/renewal-reminders/run")
+async def admin_run_renewal_check(request: Request):
+    """Manually trigger the auto-renewal reminder check (3 days before expiry)."""
+    await get_admin_user(request)
+    await check_renewal_reminders()
+    recent = await db.renewal_reminders_log.find({}, {"_id": 0}).sort("sent_at", -1).to_list(50)
+    return {"success": True, "message": "Provjera pokrenuta", "recent_log": recent[:10]}
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -2847,6 +2864,104 @@ async def check_inactivity_reminders():
         logger.info(f"Inactivity check: {len(users)} inactive users checked")
     except Exception as e:
         logger.error(f"Inactivity reminder error: {e}")
+
+
+async def check_renewal_reminders():
+    """Send auto-renewal reminders 3 days before membership expiry.
+
+    - Finds active memberships expiring in exactly 3 days (calendar days).
+    - Idempotent: each membership/expiry pair is reminded at most once,
+      tracked in the renewal_reminders_log collection.
+    - Sends Expo push notification + persistent in-app notification.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        target_date = (now + timedelta(days=3)).strftime("%Y-%m-%d")
+        memberships = await db.memberships.find(
+            {"tip": "aktivna", "datum_isteka": {"$regex": f"^{target_date}"}},
+            {"_id": 0}
+        ).to_list(1000)
+
+        sent_count = 0
+        skipped_count = 0
+        failed_count = 0
+
+        for m in memberships:
+            membership_id = m.get("id")
+            user_id = m.get("user_id")
+            if not membership_id or not user_id:
+                continue
+
+            # Idempotency: skip if we've already logged a reminder for this expiry
+            already = await db.renewal_reminders_log.find_one({
+                "membership_id": membership_id,
+                "datum_isteka": m.get("datum_isteka"),
+            })
+            if already:
+                skipped_count += 1
+                continue
+
+            user = await db.users.find_one(
+                {"user_id": user_id},
+                {"_id": 0, "name": 1, "phone": 1}
+            )
+            user_name = (user or {}).get("name") or "klijent"
+            paket = m.get("naziv", "članarina")
+
+            title = "Vaša članarina uskoro ističe"
+            message = (
+                f"Pozdrav {user_name}! Vaša Linea Pilates članarina "
+                f"({paket}) ističe za 3 dana ({target_date}). "
+                f"Obnovite paket i nastavite tamo gdje ste stali."
+            )
+
+            push_status = "skipped"
+            try:
+                push_result = await send_push_notification(user_id, title, message)
+                push_status = "ok" if push_result else "no_token"
+            except Exception as push_err:
+                logger.error(f"Renewal push error for {user_id}: {push_err}")
+                push_status = "error"
+
+            # Always create the in-app notification (works even without push token)
+            try:
+                await db.notifications.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "type": "renewal_reminder",
+                    "title": title,
+                    "message": message,
+                    "data": {"membership_id": membership_id, "datum_isteka": m.get("datum_isteka")},
+                    "read": False,
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                })
+            except Exception as notif_err:
+                logger.error(f"Renewal in-app notif error for {user_id}: {notif_err}")
+                failed_count += 1
+                continue
+
+            await db.renewal_reminders_log.insert_one({
+                "id": str(uuid.uuid4()),
+                "membership_id": membership_id,
+                "user_id": user_id,
+                "user_name": user_name,
+                "datum_isteka": m.get("datum_isteka"),
+                "naziv_paketa": paket,
+                "title": title,
+                "message": message,
+                "push_status": push_status,
+                "channel": "auto_scheduler",
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+            })
+            sent_count += 1
+
+        logger.info(
+            f"Renewal reminder check ({target_date}): "
+            f"matched={len(memberships)}, sent={sent_count}, "
+            f"skipped(already_sent)={skipped_count}, failed={failed_count}"
+        )
+    except Exception as e:
+        logger.error(f"Renewal reminder error: {e}")
 
 # ============== SEED DATA ==============
 
@@ -3034,9 +3149,12 @@ async def startup():
     await seed_admin()
     await seed_schedule()
     await seed_studio_users()
-    # Start notification scheduler - runs every hour
+    # Start notification scheduler
     scheduler.add_job(check_day_before_reminders, 'interval', hours=1, id='day_before')
     scheduler.add_job(check_inactivity_reminders, 'interval', hours=6, id='inactivity')
+    # Auto-renewal reminders: run once a day at 09:00 UTC + immediate first run on startup
+    scheduler.add_job(check_renewal_reminders, 'cron', hour=9, minute=0, id='renewal_reminder')
+    scheduler.add_job(check_renewal_reminders, 'date', run_date=datetime.now(timezone.utc) + timedelta(seconds=15), id='renewal_reminder_initial')
     scheduler.start()
     logger.info("Notification scheduler started")
 
