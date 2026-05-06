@@ -2048,10 +2048,11 @@ VALID_PAST_TRAINING_TIMES = {"08:00", "09:00", "10:00", "11:00", "17:00", "18:00
 
 @api_router.post("/admin/users/{user_id}/add-past-training")
 async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingRequest, request: Request):
-    """Admin manually logs a past training that the user attended (e.g. legacy data import).
+    """Admin manually logs a past training that the user attended.
 
-    Creates a training entry with tip='iskoristen' so it shows up in the user's history
-    without affecting the live booking schedule or membership counters.
+    - Creates a training entry with tip='iskoristen' (shows up in user history).
+    - If user has an active membership with remaining sessions, decrements
+      `preostali_termini` by 1. If none, still records the training (no error).
     """
     admin_user = await get_admin_user(request)
 
@@ -2087,9 +2088,44 @@ async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingReques
     }
     await db.trainings.insert_one(training)
 
+    # Decrement active membership's preostali_termini by 1 (only if > 0)
+    deducted = False
+    remaining_after = None
+    active_membership = await db.memberships.find_one(
+        {"user_id": user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}},
+        {"_id": 0, "id": 1, "preostali_termini": 1, "naziv": 1},
+    )
+    if active_membership:
+        update_result = await db.memberships.update_one(
+            {"id": active_membership["id"], "preostali_termini": {"$gt": 0}},
+            {"$inc": {"preostali_termini": -1}},
+        )
+        if update_result.modified_count == 1:
+            deducted = True
+            remaining_after = active_membership["preostali_termini"] - 1
+            # Link training to membership for audit trail
+            await db.trainings.update_one(
+                {"id": training["id"]},
+                {"$set": {"membership_id": active_membership["id"]}},
+            )
+
+    user_name = user_doc.get("name", "korisnika")
+    if deducted:
+        message = (
+            f"Prošli trening dodan za {user_name} ({data.datum} u {data.vrijeme}). "
+            f"Oduzet 1 termin iz aktivne članarine (preostalo: {remaining_after})."
+        )
+    else:
+        message = (
+            f"Prošli trening dodan za {user_name} ({data.datum} u {data.vrijeme}). "
+            f"Nema aktivne članarine — trening zabilježen samo u historiji."
+        )
+
     return {
         "success": True,
-        "message": f"Prošli trening dodan za {user_doc.get('name', 'korisnika')} ({data.datum} u {data.vrijeme}).",
+        "message": message,
+        "deducted": deducted,
+        "remaining_after": remaining_after,
         "training": {k: v for k, v in training.items() if k != "_id"},
     }
 
