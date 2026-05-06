@@ -13,6 +13,11 @@ import httpx
 from passlib.hash import bcrypt
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
+import re
+import random
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -169,6 +174,29 @@ class AdminCancelRequest(BaseModel):
 
 class PackageRequestModel(BaseModel):
     package_id: str
+
+
+class UserProfileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class PinChangeRequest(BaseModel):
+    old_pin: str
+    new_pin: str
+
+
+class ForgotPinRequest(BaseModel):
+    email: str
+
+
+class ResetPinRequest(BaseModel):
+    email: str
+    code: str
+    new_pin: str
 
 class AdminNoteRequest(BaseModel):
     notes: str
@@ -1580,6 +1608,246 @@ async def search_users(q: str, request: Request):
     
     return users
 
+# ============== USER PROFILE & PIN MANAGEMENT ==============
+
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+PHONE_REGEX = re.compile(r"^\+?[0-9]{8,15}$")
+
+
+def _validate_pin(value: str, field_name: str = "PIN") -> None:
+    if not value or len(value) != 4 or not value.isdigit():
+        raise HTTPException(status_code=400, detail=f"{field_name} mora biti tačno 4 cifre.")
+
+
+def _send_reset_email(to_email: str, code: str) -> None:
+    """Send PIN reset code via Gmail SMTP. Raises 500 on config/send failure."""
+    smtp_email = os.environ.get("SMTP_EMAIL")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    if not smtp_email or not smtp_password:
+        logger.error("SMTP credentials missing (SMTP_EMAIL / SMTP_PASSWORD)")
+        raise HTTPException(status_code=500, detail="Servis za slanje emaila nije konfigurisan.")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Linea Pilates — Reset PIN kod"
+    msg["From"] = smtp_email
+    msg["To"] = to_email
+
+    text_body = (
+        f"Pozdrav,\n\n"
+        f"Vaš kod za reset PIN-a je: {code}\n"
+        f"Kod važi 15 minuta.\n\n"
+        f"Ako niste zatražili reset PIN-a, ignorišite ovu poruku.\n\n"
+        f"— Linea Pilates"
+    )
+    html_body = f"""
+    <html><body style="font-family:Arial,sans-serif;color:#222;">
+      <h2 style="color:#C4A574;">Linea Pilates</h2>
+      <p>Pozdrav,</p>
+      <p>Vaš kod za reset PIN-a je:</p>
+      <p style="font-size:28px;font-weight:bold;letter-spacing:6px;color:#1a1a2e;">{code}</p>
+      <p>Kod važi <strong>15 minuta</strong>.</p>
+      <p style="color:#888;font-size:12px;">Ako niste zatražili reset PIN-a, ignorišite ovu poruku.</p>
+    </body></html>
+    """
+    msg.attach(MIMEText(text_body, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as server:
+            server.starttls()
+            server.login(smtp_email, smtp_password)
+            server.sendmail(smtp_email, [to_email], msg.as_string())
+    except Exception as e:
+        logger.error(f"SMTP send failed to {to_email}: {e}")
+        raise HTTPException(status_code=500, detail="Slanje emaila nije uspjelo. Pokušajte ponovo kasnije.")
+
+
+@api_router.put("/user/profile")
+async def update_user_profile(data: UserProfileUpdateRequest, request: Request):
+    """Authenticated user updates own profile (first_name, last_name, email, phone)."""
+    user = await get_current_user(request)
+
+    updates: dict = {}
+
+    # Name: combine first_name + last_name into existing `name` field (schema compat)
+    if data.first_name is not None or data.last_name is not None:
+        first = (data.first_name or "").strip()
+        last = (data.last_name or "").strip()
+        if data.first_name is not None and not first:
+            raise HTTPException(status_code=400, detail="Ime ne smije biti prazno.")
+        if data.last_name is not None and not last:
+            raise HTTPException(status_code=400, detail="Prezime ne smije biti prazno.")
+        # Preserve existing halves if only one is provided
+        current = await db.users.find_one({"user_id": user.user_id}, {"_id": 0, "name": 1})
+        current_name = (current or {}).get("name", "") if current else ""
+        parts = current_name.split(" ", 1)
+        cur_first = parts[0] if parts else ""
+        cur_last = parts[1] if len(parts) > 1 else ""
+        final_first = first if data.first_name is not None else cur_first
+        final_last = last if data.last_name is not None else cur_last
+        updates["name"] = (final_first + " " + final_last).strip()
+        updates["first_name"] = final_first
+        updates["last_name"] = final_last
+
+    if data.email is not None:
+        email_clean = data.email.strip().lower()
+        if not EMAIL_REGEX.match(email_clean):
+            raise HTTPException(status_code=400, detail="Nevažeći format email adrese.")
+        # Enforce uniqueness among other users
+        taken_by = await db.users.find_one(
+            {"email": email_clean, "user_id": {"$ne": user.user_id}},
+            {"_id": 0, "user_id": 1},
+        )
+        if taken_by:
+            raise HTTPException(status_code=400, detail="Email je već u upotrebi.")
+        updates["email"] = email_clean
+
+    if data.phone is not None:
+        phone_clean = data.phone.strip().replace(" ", "")
+        if not PHONE_REGEX.match(phone_clean):
+            raise HTTPException(status_code=400, detail="Nevažeći format broja telefona.")
+        taken_by = await db.users.find_one(
+            {"phone": phone_clean, "user_id": {"$ne": user.user_id}},
+            {"_id": 0, "user_id": 1},
+        )
+        if taken_by:
+            raise HTTPException(status_code=400, detail="Broj telefona je već u upotrebi.")
+        updates["phone"] = phone_clean
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="Nije prosleđeno nijedno polje za ažuriranje.")
+
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"user_id": user.user_id}, {"$set": updates})
+
+    fresh = await db.users.find_one(
+        {"user_id": user.user_id},
+        {"_id": 0, "pin_hash": 0, "reset_code": 0, "reset_code_expires": 0},
+    )
+    return {"success": True, "message": "Profil je uspješno ažuriran.", "user": fresh}
+
+
+@api_router.put("/user/change-pin")
+async def change_user_pin(data: PinChangeRequest, request: Request):
+    """Authenticated user changes their own PIN."""
+    user = await get_current_user(request)
+
+    _validate_pin(data.new_pin, "Novi PIN")
+
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0, "pin_hash": 1})
+    if not user_doc or not user_doc.get("pin_hash"):
+        raise HTTPException(status_code=400, detail="PIN nije postavljen za ovaj nalog.")
+
+    if not bcrypt.verify(data.old_pin, user_doc["pin_hash"]):
+        raise HTTPException(status_code=400, detail="Pogrešan stari PIN.")
+
+    if data.old_pin == data.new_pin:
+        raise HTTPException(status_code=400, detail="Novi PIN mora biti različit od starog.")
+
+    await db.users.update_one(
+        {"user_id": user.user_id},
+        {"$set": {
+            "pin_hash": bcrypt.hash(data.new_pin),
+            "pin_updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return {"success": True, "message": "PIN je uspješno promijenjen."}
+
+
+@api_router.post("/auth/forgot-pin")
+async def forgot_pin(data: ForgotPinRequest):
+    """Request a 6-digit reset code sent to the user's email.
+
+    Always returns a generic success message to prevent email enumeration.
+    """
+    generic_response = {
+        "success": True,
+        "message": "Ako email postoji u sistemu, poslali smo vam kod za reset PIN-a.",
+    }
+
+    email_clean = (data.email or "").strip().lower()
+    if not email_clean or not EMAIL_REGEX.match(email_clean):
+        return generic_response
+
+    user_doc = await db.users.find_one({"email": email_clean}, {"_id": 0, "user_id": 1})
+    if not user_doc:
+        return generic_response
+
+    code = f"{random.randint(0, 999999):06d}"
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+    await db.users.update_one(
+        {"user_id": user_doc["user_id"]},
+        {"$set": {
+            "reset_code": code,
+            "reset_code_expires": expires_at.isoformat(),
+        }},
+    )
+
+    try:
+        _send_reset_email(email_clean, code)
+    except HTTPException:
+        # Clear the code if email could not be sent; re-raise so client knows
+        await db.users.update_one(
+            {"user_id": user_doc["user_id"]},
+            {"$unset": {"reset_code": "", "reset_code_expires": ""}},
+        )
+        raise
+
+    return generic_response
+
+
+@api_router.post("/auth/reset-pin")
+async def reset_pin(data: ResetPinRequest):
+    """Verify reset code and set a new PIN."""
+    email_clean = (data.email or "").strip().lower()
+    if not email_clean or not EMAIL_REGEX.match(email_clean):
+        raise HTTPException(status_code=400, detail="Nevažeći format email adrese.")
+
+    _validate_pin(data.new_pin, "Novi PIN")
+
+    if not data.code or not data.code.isdigit() or len(data.code) != 6:
+        raise HTTPException(status_code=400, detail="Kod mora biti 6 cifara.")
+
+    user_doc = await db.users.find_one(
+        {"email": email_clean},
+        {"_id": 0, "user_id": 1, "reset_code": 1, "reset_code_expires": 1},
+    )
+    if not user_doc or not user_doc.get("reset_code"):
+        raise HTTPException(status_code=400, detail="Nevažeći ili istekao kod.")
+
+    if user_doc["reset_code"] != data.code:
+        raise HTTPException(status_code=400, detail="Nevažeći ili istekao kod.")
+
+    expires_raw = user_doc.get("reset_code_expires")
+    try:
+        expires_dt = datetime.fromisoformat(expires_raw)
+        if expires_dt.tzinfo is None:
+            expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Nevažeći ili istekao kod.")
+
+    if expires_dt < datetime.now(timezone.utc):
+        # Also clear expired code
+        await db.users.update_one(
+            {"user_id": user_doc["user_id"]},
+            {"$unset": {"reset_code": "", "reset_code_expires": ""}},
+        )
+        raise HTTPException(status_code=400, detail="Nevažeći ili istekao kod.")
+
+    await db.users.update_one(
+        {"user_id": user_doc["user_id"]},
+        {
+            "$set": {
+                "pin_hash": bcrypt.hash(data.new_pin),
+                "pin_updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "$unset": {"reset_code": "", "reset_code_expires": ""},
+        },
+    )
+    return {"success": True, "message": "PIN je uspješno resetovan. Prijavite se sa novim PIN-om."}
+
+
 # ============== PACKAGE REQUESTS ==============
 
 @api_router.post("/packages/request")
@@ -1592,6 +1860,25 @@ async def request_package(data: PackageRequestModel, request: Request):
     )
     if existing:
         raise HTTPException(status_code=400, detail="Već imate zahtjev za paket na čekanju.")
+    # Block duplicate: user cannot request a new package while having an active one
+    # Active = tip 'aktivna' AND (datum_isteka in future OR preostali_termini > 0)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    active_membership = await db.memberships.find_one(
+        {
+            "user_id": user.user_id,
+            "tip": "aktivna",
+            "$or": [
+                {"datum_isteka": {"$gt": now_iso}},
+                {"preostali_termini": {"$gt": 0}},
+            ],
+        },
+        {"_id": 0},
+    )
+    if active_membership:
+        raise HTTPException(
+            status_code=400,
+            detail="Već imate aktivan paket. Novi paket možete izabrati kada istekne trenutni ili kada potrošite sve treninge.",
+        )
     # Get package info from database
     pkg = await db.packages.find_one({"id": data.package_id}, {"_id": 0})
     if not pkg:
