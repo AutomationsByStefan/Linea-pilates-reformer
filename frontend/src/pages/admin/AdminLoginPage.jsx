@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { Lock, Phone, KeyRound, ArrowLeft } from 'lucide-react';
+import { Lock, Phone, KeyRound, ArrowLeft, Mail, CheckCircle2 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -24,13 +24,20 @@ function normalizePhone(prefix, raw) {
 
 const AdminLoginPage = () => {
   const navigate = useNavigate();
-  const [step, setStep] = useState('phone'); // 'phone' | 'pin'
+  const [step, setStep] = useState('phone'); // 'phone' | 'pin' | 'forgot-email' | 'forgot-reset'
   const [prefix, setPrefix] = useState('+387');
   const [phoneLocal, setPhoneLocal] = useState('');
   const [pin, setPin] = useState('');
   const [userName, setUserName] = useState('');
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
+
+  // Forgot PIN state
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [resetCode, setResetCode] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [emailSent, setEmailSent] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -108,6 +115,75 @@ const AdminLoginPage = () => {
       navigate('/admin');
     } catch {
       toast.error('Greška pri prijavi');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleForgotEmailSubmit = async (e) => {
+    e.preventDefault();
+    if (!forgotEmail.trim()) { toast.error('Unesite email adresu'); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/auth/forgot-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: forgotEmail.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.detail || 'Greška pri slanju koda');
+        return;
+      }
+      setEmailSent(true);
+      toast.success('Kod je poslan na vašu email adresu.');
+      setStep('forgot-reset');
+    } catch {
+      toast.error('Greška pri slanju koda');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPinSubmit = async (e) => {
+    e.preventDefault();
+    if (resetCode.length !== 6 || !/^\d{6}$/.test(resetCode)) {
+      toast.error('Kod mora biti 6 cifara');
+      return;
+    }
+    if (newPin.length !== 4 || !/^\d{4}$/.test(newPin)) {
+      toast.error('Novi PIN mora biti 4 cifre');
+      return;
+    }
+    if (newPin !== confirmPin) {
+      toast.error('PIN-ovi se ne podudaraju');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/auth/reset-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: forgotEmail.trim(), code: resetCode, new_pin: newPin }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.detail || 'Greška pri resetu PIN-a');
+        return;
+      }
+      toast.success('PIN uspješno resetovan.');
+      // Reset state and return to PIN login screen
+      setResetCode('');
+      setNewPin('');
+      setConfirmPin('');
+      setForgotEmail('');
+      setEmailSent(false);
+      setPin('');
+      setStep('pin');
+    } catch {
+      toast.error('Greška pri resetu PIN-a');
     } finally {
       setLoading(false);
     }
@@ -210,6 +286,130 @@ const AdminLoginPage = () => {
               data-testid="admin-login-btn"
             >
               {loading ? 'Prijava...' : 'Prijavi se'}
+            </Button>
+            <button
+              type="button"
+              onClick={() => {
+                setForgotEmail('');
+                setResetCode('');
+                setNewPin('');
+                setConfirmPin('');
+                setEmailSent(false);
+                setStep('forgot-email');
+              }}
+              className="block w-full text-center text-[#C4A574] hover:text-[#D4B584] text-xs underline-offset-2 hover:underline"
+              data-testid="forgot-pin-link"
+            >
+              Zaboravili ste PIN?
+            </button>
+          </form>
+        )}
+
+        {step === 'forgot-email' && (
+          <form onSubmit={handleForgotEmailSubmit} className="space-y-4" data-testid="forgot-email-step">
+            <button
+              type="button"
+              onClick={() => setStep('pin')}
+              className="text-white/50 hover:text-white text-xs flex items-center gap-1"
+              data-testid="forgot-back-btn"
+            >
+              <ArrowLeft className="w-3 h-3" /> Nazad
+            </button>
+            <p className="text-white/70 text-sm">
+              Unesite email adresu povezanu sa vašim nalogom
+            </p>
+            <label className="block text-white/60 text-xs uppercase tracking-wider mb-1">Email adresa</label>
+            <div className="relative">
+              <Mail className="w-4 h-4 text-white/30 absolute left-3 top-1/2 -translate-y-1/2" />
+              <Input
+                type="email"
+                autoFocus
+                placeholder="vasa@email.com"
+                value={forgotEmail}
+                onChange={(e) => setForgotEmail(e.target.value)}
+                className="h-12 bg-white/10 border-white/20 text-white placeholder:text-white/40 pl-9"
+                data-testid="forgot-email-input"
+              />
+            </div>
+            <Button
+              type="submit"
+              disabled={loading}
+              className="w-full h-12 bg-[#C4A574] hover:bg-[#A68B5B] text-white font-medium"
+              data-testid="send-code-btn"
+            >
+              {loading ? 'Slanje...' : 'Pošalji kod'}
+            </Button>
+            <p className="text-white/40 text-[11px] text-center">
+              Ako email postoji u sistemu, dobit ćete 6-cifren kod koji važi 15 minuta.
+            </p>
+          </form>
+        )}
+
+        {step === 'forgot-reset' && (
+          <form onSubmit={handleResetPinSubmit} className="space-y-4" data-testid="forgot-reset-step">
+            <button
+              type="button"
+              onClick={() => setStep('forgot-email')}
+              className="text-white/50 hover:text-white text-xs flex items-center gap-1"
+              data-testid="reset-back-btn"
+            >
+              <ArrowLeft className="w-3 h-3" /> Nazad
+            </button>
+            {emailSent && (
+              <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                <p className="text-emerald-300 text-xs">
+                  Kod je poslan na <span className="font-medium">{forgotEmail}</span>. Provjerite inbox i spam folder.
+                </p>
+              </div>
+            )}
+            <div>
+              <label className="block text-white/60 text-xs uppercase tracking-wider mb-1">Kod iz emaila</label>
+              <Input
+                type="text"
+                inputMode="numeric"
+                autoFocus
+                maxLength={6}
+                placeholder="••••••"
+                value={resetCode}
+                onChange={(e) => setResetCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="h-12 bg-white/10 border-white/20 text-white placeholder:text-white/40 tracking-[0.4em] text-center"
+                data-testid="reset-code-input"
+              />
+            </div>
+            <div>
+              <label className="block text-white/60 text-xs uppercase tracking-wider mb-1">Novi PIN</label>
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                placeholder="••••"
+                value={newPin}
+                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                className="h-12 bg-white/10 border-white/20 text-white placeholder:text-white/40 tracking-[0.5em] text-center"
+                data-testid="reset-new-pin-input"
+              />
+            </div>
+            <div>
+              <label className="block text-white/60 text-xs uppercase tracking-wider mb-1">Potvrdi novi PIN</label>
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                placeholder="••••"
+                value={confirmPin}
+                onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                className="h-12 bg-white/10 border-white/20 text-white placeholder:text-white/40 tracking-[0.5em] text-center"
+                data-testid="reset-confirm-pin-input"
+              />
+            </div>
+            <Button
+              type="submit"
+              disabled={loading || resetCode.length !== 6 || newPin.length !== 4 || confirmPin.length !== 4}
+              className="w-full h-12 bg-[#C4A574] hover:bg-[#A68B5B] text-white font-medium disabled:opacity-50"
+              data-testid="reset-pin-btn"
+            >
+              {loading ? 'Resetovanje...' : 'Resetuj PIN'}
             </Button>
           </form>
         )}
