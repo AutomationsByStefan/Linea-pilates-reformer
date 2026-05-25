@@ -3158,6 +3158,23 @@ async def admin_run_renewal_check(request: Request):
     recent = await db.renewal_reminders_log.find({}, {"_id": 0}).sort("sent_at", -1).to_list(50)
     return {"success": True, "message": "Provjera pokrenuta", "recent_log": recent[:10]}
 
+
+@api_router.get("/admin/inactivity-reminders/log")
+async def admin_get_inactivity_log(request: Request):
+    """Get history of 5-day inactivity push reminders sent."""
+    await get_admin_user(request)
+    entries = await db.inactivity_reminders_log.find({}, {"_id": 0}).sort("sent_at", -1).to_list(500)
+    return {"count": len(entries), "entries": entries}
+
+
+@api_router.post("/admin/inactivity-reminders/run")
+async def admin_run_inactivity_check(request: Request):
+    """Manually trigger the 5-day inactivity reminder check."""
+    await get_admin_user(request)
+    await check_5day_inactivity_reminders()
+    recent = await db.inactivity_reminders_log.find({}, {"_id": 0}).sort("sent_at", -1).to_list(50)
+    return {"success": True, "message": "Provjera pokrenuta", "recent_log": recent[:10]}
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -3247,6 +3264,130 @@ async def check_inactivity_reminders():
         logger.info(f"Inactivity check: {len(users)} inactive users checked")
     except Exception as e:
         logger.error(f"Inactivity reminder error: {e}")
+
+
+async def check_5day_inactivity_reminders():
+    """Send push notifications to users with active memberships who haven't trained in 5+ days.
+
+    Idempotent: at most one reminder per user per 5-day window
+    (tracked in inactivity_reminders_log collection).
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        five_days_ago = (now - timedelta(days=5)).isoformat()
+
+        # 1) Find all active memberships (not expired, has remaining sessions)
+        active_memberships = await db.memberships.find(
+            {
+                "tip": "aktivna",
+                "datum_isteka": {"$gt": now_iso},
+                "preostali_termini": {"$gt": 0},
+            },
+            {"_id": 0, "user_id": 1},
+        ).to_list(5000)
+
+        sent_count = 0
+        skipped_count = 0
+        failed_count = 0
+        seen_users = set()
+
+        for m in active_memberships:
+            uid = m.get("user_id")
+            if not uid or uid in seen_users:
+                continue
+            seen_users.add(uid)
+
+            # 2) Find user's most recent completed training
+            last_training = await db.trainings.find_one(
+                {
+                    "user_id": uid,
+                    "tip": {"$in": ["završen", "prethodni", "iskoristen"]},
+                },
+                {"_id": 0, "datum": 1, "tip": 1},
+                sort=[("datum", -1)],
+            )
+
+            last_training_date = None
+            send_reminder = False
+            if last_training:
+                raw_date = last_training.get("datum", "")
+                try:
+                    if isinstance(raw_date, str):
+                        if "T" in raw_date:
+                            last_dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+                        else:
+                            last_dt = datetime.strptime(raw_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    else:
+                        last_dt = raw_date
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    days_since = (now - last_dt).days
+                    last_training_date = last_dt.isoformat()
+                    if days_since >= 5:
+                        send_reminder = True
+                except Exception as e:
+                    logger.warning(f"Inactivity: bad last training date for {uid}: {e}")
+                    send_reminder = True
+            else:
+                # Never trained
+                send_reminder = True
+
+            if not send_reminder:
+                continue
+
+            # 3) Idempotency: skip if a reminder was already sent within 5 days
+            recent_log = await db.inactivity_reminders_log.find_one({
+                "user_id": uid,
+                "sent_at": {"$gte": five_days_ago},
+            })
+            if recent_log:
+                skipped_count += 1
+                continue
+
+            title = "Vrijeme je za trening! 💪"
+            message = "Niste trenirali već 5 dana. Zakažite svoj sljedeći trening!"
+
+            push_status = "skipped"
+            try:
+                push_ok = await send_push_notification(uid, title, message)
+                push_status = "ok" if push_ok else "no_token"
+            except Exception as push_err:
+                logger.error(f"Inactivity push error for {uid}: {push_err}")
+                push_status = "error"
+
+            try:
+                await db.notifications.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "user_id": uid,
+                    "type": "inactivity_5day_reminder",
+                    "title": title,
+                    "message": message,
+                    "data": {"last_training_date": last_training_date},
+                    "read": False,
+                    "created_at": now_iso,
+                })
+            except Exception as notif_err:
+                logger.error(f"Inactivity in-app notif error for {uid}: {notif_err}")
+                failed_count += 1
+                continue
+
+            await db.inactivity_reminders_log.insert_one({
+                "id": str(uuid.uuid4()),
+                "user_id": uid,
+                "sent_at": now_iso,
+                "last_training_date": last_training_date,
+                "push_status": push_status,
+                "channel": "auto_scheduler",
+            })
+            sent_count += 1
+
+        logger.info(
+            f"5-day inactivity check: active_users={len(seen_users)}, "
+            f"sent={sent_count}, skipped(recent)={skipped_count}, failed={failed_count}"
+        )
+    except Exception as e:
+        logger.error(f"5-day inactivity reminder error: {e}")
 
 
 async def mark_renewal_conversions(user_id: str, source: str):
@@ -3571,6 +3712,8 @@ async def startup():
     # Auto-renewal reminders: run once a day at 09:00 UTC + immediate first run on startup
     scheduler.add_job(check_renewal_reminders, 'cron', hour=9, minute=0, id='renewal_reminder')
     scheduler.add_job(check_renewal_reminders, 'date', run_date=datetime.now(timezone.utc) + timedelta(seconds=15), id='renewal_reminder_initial')
+    # 5-day inactivity push reminders: run once a day at 10:00 UTC (after renewal job)
+    scheduler.add_job(check_5day_inactivity_reminders, 'cron', hour=10, minute=0, id='inactivity_5day')
     scheduler.start()
     logger.info("Notification scheduler started")
 
