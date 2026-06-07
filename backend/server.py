@@ -253,6 +253,24 @@ def detect_phone_country(phone: str) -> str:
 
 # ============== HELPER FUNCTIONS ==============
 
+async def expire_overdue_memberships(user_id: str):
+    """Mark any active membership past its expiry date as expired.
+
+    Sets tip to "istekla" and zeroes out preostali_termini. datum_isteka is stored
+    as a timezone-aware ISO string, so a lexicographic string comparison against the
+    current ISO timestamp is correct (same convention used elsewhere in this file).
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.memberships.update_many(
+        {
+            "user_id": user_id,
+            "tip": "aktivna",
+            "datum_isteka": {"$ne": None, "$lt": now_iso},
+        },
+        {"$set": {"tip": "istekla", "preostali_termini": 0}},
+    )
+
+
 async def get_current_user(request: Request) -> User:
     """Get current user from session token in cookie or Authorization header"""
     session_token = request.cookies.get("session_token")
@@ -288,7 +306,10 @@ async def get_current_user(request: Request) -> User:
     
     if not user_doc:
         raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
-    
+
+    # Auto-expire any overdue active membership on every authenticated request
+    await expire_overdue_memberships(user_doc["user_id"])
+
     return User(**user_doc)
 
 async def get_admin_user(request: Request) -> dict:
@@ -546,6 +567,10 @@ async def get_me(request: Request):
         {"user_id": user.user_id},
         {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
     )
+    # Count of "minus" trainings (booked with no membership or while in session deficit)
+    user_doc["minus_treninzi"] = await db.trainings.count_documents(
+        {"user_id": user.user_id, "minus": True}
+    )
     return user_doc
 
 @api_router.post("/auth/logout")
@@ -789,7 +814,7 @@ async def get_upcoming_trainings(request: Request):
     user = await get_current_user(request)
     now = datetime.now(timezone.utc)
     trainings = await db.trainings.find(
-        {"user_id": user.user_id, "tip": "predstojeći"},
+        {"user_id": user.user_id, "tip": {"$in": ["predstojeći", "probni"]}},
         {"_id": 0}
     ).to_list(100)
     result = []
@@ -876,28 +901,11 @@ async def create_booking(data: BookingRequest, request: Request):
     """Book a training slot"""
     user = await get_current_user(request)
 
-    # Admin override: an admin may book even when the user has 0 remaining sessions
-    admin_override = False
-    if data.admin_override:
-        requester = await db.users.find_one({"user_id": user.user_id}, {"_id": 0, "is_admin": 1})
-        if requester and requester.get("is_admin"):
-            admin_override = True
-
-    # Check if user has active membership with remaining slots
+    # Find the user's active membership (regardless of remaining sessions)
     membership = await db.memberships.find_one(
-        {"user_id": user.user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}},
-        {"_id": 0}
+        {"user_id": user.user_id, "tip": "aktivna"}, {"_id": 0}
     )
 
-    if not membership and admin_override:
-        # Fall back to any active membership (even one with 0 remaining termina)
-        membership = await db.memberships.find_one(
-            {"user_id": user.user_id, "tip": "aktivna"}, {"_id": 0}
-        )
-
-    if not membership and not admin_override:
-        raise HTTPException(status_code=400, detail="Nemate aktivnu clanarinu ili preostalih termina. Izaberite paket u sekciji 'Paketi'.")
-    
     # Check one booking per day limit
     existing_today = await db.trainings.find_one({
         "user_id": user.user_id,
@@ -906,8 +914,8 @@ async def create_booking(data: BookingRequest, request: Request):
     })
     if existing_today:
         raise HTTPException(status_code=400, detail="Vec imate zakazan termin za ovaj dan. Mozete imati samo jedan termin dnevno.")
-    
-    # Check actual slot availability
+
+    # Check actual slot availability (capacity)
     slot = await db.schedule_slots.find_one({"id": data.slot_id}, {"_id": 0})
     if slot:
         booked_count = await db.trainings.count_documents({
@@ -915,7 +923,22 @@ async def create_booking(data: BookingRequest, request: Request):
         })
         if booked_count >= slot.get("ukupno_mjesta", 3):
             raise HTTPException(status_code=400, detail="Ovaj termin je popunjen")
-    
+
+    # One booking per slot: a user cannot book the same slot twice
+    existing_in_slot = await db.trainings.find_one({
+        "user_id": user.user_id,
+        "slot_id": data.slot_id,
+        "tip": {"$in": ["predstojeći", "završen"]}
+    })
+    if existing_in_slot:
+        raise HTTPException(status_code=400, detail="Već imate rezervaciju za ovaj termin.")
+
+    # Determine whether this is a "minus" (deficit) booking:
+    #  - no active membership at all, or
+    #  - active membership with 0 or fewer remaining sessions.
+    remaining = membership.get("preostali_termini", 0) if membership else 0
+    is_minus = (membership is None) or (remaining <= 0)
+
     # Create training record
     training_id = str(uuid.uuid4())
     training = {
@@ -930,8 +953,10 @@ async def create_booking(data: BookingRequest, request: Request):
         "feedback_submitted": False,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
+    if is_minus:
+        training["minus"] = True
     await db.trainings.insert_one(training)
-    
+
     # If this is user's first training on this membership, start the 35-day period from this date
     first_training = await db.trainings.count_documents({
         "user_id": user.user_id,
@@ -947,8 +972,10 @@ async def create_booking(data: BookingRequest, request: Request):
             }}
         )
 
-    # Decrement membership slots (only if there are sessions left; never go negative)
-    if membership and membership.get("preostali_termini", 0) > 0:
+    # Decrement membership sessions. If the user has an active membership we always
+    # decrement, allowing the balance to go negative (-1, -2, ...). With no active
+    # membership nothing is deducted and the training stays flagged as minus.
+    if membership:
         await db.memberships.update_one(
             {"id": membership["id"]},
             {"$inc": {"preostali_termini": -1}}
@@ -964,6 +991,68 @@ async def create_booking(data: BookingRequest, request: Request):
         "success": True,
         "training_id": training_id,
         "message": "Termin je uspjesno rezervisan!"
+    }
+
+
+@api_router.post("/bookings/trial")
+async def create_trial_booking(data: BookingRequest, request: Request):
+    """Book a free trial training ("probni trening") for a brand-new member.
+
+    Only available to users who have never trained before (no training history).
+    No membership is required. Slot capacity and one-booking-per-slot still apply.
+    """
+    user = await get_current_user(request)
+
+    # Must have zero training history (any non-cancelled training disqualifies)
+    existing_history = await db.trainings.count_documents({
+        "user_id": user.user_id,
+        "tip": {"$ne": "otkazan"}
+    })
+    if existing_history > 0:
+        raise HTTPException(status_code=400, detail="Probni trening je dostupan samo za nove članice.")
+
+    # Check slot availability (capacity)
+    slot = await db.schedule_slots.find_one({"id": data.slot_id}, {"_id": 0})
+    if slot:
+        booked_count = await db.trainings.count_documents({
+            "slot_id": data.slot_id, "tip": {"$in": ["predstojeći", "završen", "probni"]}
+        })
+        if booked_count >= slot.get("ukupno_mjesta", 3):
+            raise HTTPException(status_code=400, detail="Ovaj termin je popunjen")
+
+    # One booking per slot
+    existing_in_slot = await db.trainings.find_one({
+        "user_id": user.user_id,
+        "slot_id": data.slot_id,
+        "tip": {"$in": ["predstojeći", "završen", "probni"]}
+    })
+    if existing_in_slot:
+        raise HTTPException(status_code=400, detail="Već imate rezervaciju za ovaj termin.")
+
+    training_id = str(uuid.uuid4())
+    training = {
+        "id": training_id,
+        "user_id": user.user_id,
+        "slot_id": data.slot_id,
+        "datum": data.datum,
+        "vrijeme": data.vrijeme,
+        "instruktor": data.instruktor,
+        "tip": "probni",
+        "trajanje": 50,
+        "feedback_submitted": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.trainings.insert_one(training)
+
+    await db.users.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
+    )
+
+    return {
+        "success": True,
+        "training_id": training_id,
+        "message": "Probni trening je uspješno rezervisan!"
     }
 
 class RescheduleRequest(BaseModel):
@@ -2428,6 +2517,7 @@ async def admin_get_membership_history(user_id: str, request: Request):
 class AdminAddPastTrainingRequest(BaseModel):
     datum: str  # YYYY-MM-DD
     vrijeme: str  # HH:MM
+    historical: bool = False  # If True, record the training without deducting a session
 
 
 VALID_PAST_TRAINING_TIMES = {"08:00", "09:00", "10:00", "11:00", "17:00", "18:00", "19:00", "20:00"}
@@ -2473,15 +2563,20 @@ async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingReques
         "added_by": admin_user.get("name", "Admin"),
         "created_at": now.isoformat(),
     }
+    if data.historical:
+        training["historical"] = True
     await db.trainings.insert_one(training)
 
-    # Decrement active membership's preostali_termini by 1 (only if > 0)
+    # Decrement active membership's preostali_termini by 1 (only if > 0).
+    # Historical trainings (from previous/expired packages) never deduct a session.
     deducted = False
     remaining_after = None
-    active_membership = await db.memberships.find_one(
-        {"user_id": user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}},
-        {"_id": 0, "id": 1, "preostali_termini": 1, "naziv": 1},
-    )
+    active_membership = None
+    if not data.historical:
+        active_membership = await db.memberships.find_one(
+            {"user_id": user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}},
+            {"_id": 0, "id": 1, "preostali_termini": 1, "naziv": 1},
+        )
     if active_membership:
         update_result = await db.memberships.update_one(
             {"id": active_membership["id"], "preostali_termini": {"$gt": 0}},
@@ -2497,7 +2592,12 @@ async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingReques
             )
 
     user_name = user_doc.get("name", "korisnika")
-    if deducted:
+    if data.historical:
+        message = (
+            f"Historijski trening dodan za {user_name} ({data.datum} u {data.vrijeme}). "
+            f"Nije oduzet termin — zabilježen samo u historiji."
+        )
+    elif deducted:
         message = (
             f"Prošli trening dodan za {user_name} ({data.datum} u {data.vrijeme}). "
             f"Oduzet 1 termin iz aktivne članarine (preostalo: {remaining_after})."
