@@ -2939,6 +2939,60 @@ async def admin_cancel_booking(training_id: str, data: AdminCancelRequest, reque
     )
     return {"success": True, "message": "Rezervacija je uspješno otkazana. Termin je vraćen korisniku."}
 
+
+@api_router.post("/admin/trainings/{training_id}/cancel")
+async def admin_cancel_training(training_id: str, request: Request):
+    """Cancel a training as admin, bypassing the 12-hour cancellation window.
+
+    Restores the session to the user's active membership and frees up the slot.
+    Slot availability (slobodna_mjesta / zauzeto) is derived by counting trainings
+    with tip in ["predstojeći", "završen"], so setting tip to "otkazan" frees it.
+    """
+    await get_admin_user(request)
+    training = await db.trainings.find_one({"id": training_id}, {"_id": 0})
+    if not training:
+        raise HTTPException(status_code=404, detail="Trening nije pronađen")
+    if training.get("tip") == "otkazan":
+        raise HTTPException(status_code=400, detail="Trening je već otkazan")
+
+    # Cancel the training (no 12-hour window check for admins)
+    await db.trainings.update_one(
+        {"id": training_id},
+        {"$set": {"tip": "otkazan", "razlog_otkazivanja": "Otkazano od strane admina"}}
+    )
+    logger.info(f"Training {training_id} cancelled by admin for user {training.get('user_id')}")
+
+    # Return the session to the user's active membership
+    membership = await db.memberships.find_one(
+        {"user_id": training["user_id"], "tip": "aktivna"}, {"_id": 0}
+    )
+    if membership:
+        await db.memberships.update_one(
+            {"id": membership["id"]},
+            {"$inc": {"preostali_termini": 1}}
+        )
+
+    # Notify the user
+    training_datum = training.get("datum", "")
+    training_vrijeme = training.get("vrijeme", "")
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": training["user_id"],
+        "type": "booking_cancelled",
+        "title": "Termin otkazan",
+        "message": f"Vaš termin za {training_datum} u {training_vrijeme} je otkazan.".strip(),
+        "data": {"training_id": training_id},
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    await send_push_notification(
+        training["user_id"],
+        "Trening otkazan",
+        f"Vaš termin za {training_datum} u {training_vrijeme} je otkazan."
+    )
+
+    return {"success": True, "message": "Trening uspješno otkazan."}
+
 # ============== ADMIN BULK SCHEDULE ==============
 
 @api_router.post("/admin/schedule/generate-week")
