@@ -142,6 +142,7 @@ class BookingRequest(BaseModel):
     datum: str
     vrijeme: str
     instruktor: str
+    admin_override: bool = False  # When True and requester is admin, skip remaining-sessions check
 
 class FeedbackRequest(BaseModel):
     training_id: str
@@ -874,14 +875,27 @@ async def get_training(training_id: str, request: Request):
 async def create_booking(data: BookingRequest, request: Request):
     """Book a training slot"""
     user = await get_current_user(request)
-    
+
+    # Admin override: an admin may book even when the user has 0 remaining sessions
+    admin_override = False
+    if data.admin_override:
+        requester = await db.users.find_one({"user_id": user.user_id}, {"_id": 0, "is_admin": 1})
+        if requester and requester.get("is_admin"):
+            admin_override = True
+
     # Check if user has active membership with remaining slots
     membership = await db.memberships.find_one(
         {"user_id": user.user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}},
         {"_id": 0}
     )
-    
-    if not membership:
+
+    if not membership and admin_override:
+        # Fall back to any active membership (even one with 0 remaining termina)
+        membership = await db.memberships.find_one(
+            {"user_id": user.user_id, "tip": "aktivna"}, {"_id": 0}
+        )
+
+    if not membership and not admin_override:
         raise HTTPException(status_code=400, detail="Nemate aktivnu clanarinu ili preostalih termina. Izaberite paket u sekciji 'Paketi'.")
     
     # Check one booking per day limit
@@ -923,7 +937,7 @@ async def create_booking(data: BookingRequest, request: Request):
         "user_id": user.user_id,
         "tip": {"$in": ["predstojeći", "završen", "iskoristen"]}
     })
-    if first_training == 1:
+    if first_training == 1 and membership:
         booking_date = datetime.strptime(data.datum, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         await db.memberships.update_one(
             {"id": membership["id"]},
@@ -932,12 +946,13 @@ async def create_booking(data: BookingRequest, request: Request):
                 "datum_isteka": (booking_date + timedelta(days=35)).isoformat()
             }}
         )
-    
-    # Decrement membership slots
-    await db.memberships.update_one(
-        {"id": membership["id"]},
-        {"$inc": {"preostali_termini": -1}}
-    )
+
+    # Decrement membership slots (only if there are sessions left; never go negative)
+    if membership and membership.get("preostali_termini", 0) > 0:
+        await db.memberships.update_one(
+            {"id": membership["id"]},
+            {"$inc": {"preostali_termini": -1}}
+        )
     
     # Update last activity
     await db.users.update_one(
@@ -2028,6 +2043,91 @@ async def admin_deduct_session(user_id: str, request: Request):
     remaining = membership["preostali_termini"] - 1
     return {"success": True, "message": f"Termin je oduzet. Preostalo: {remaining}", "preostali": remaining}
 
+
+class AdminBookTrainingRequest(BaseModel):
+    slot_id: str
+
+
+@api_router.post("/admin/users/{user_id}/book-training")
+async def admin_book_training(user_id: str, data: AdminBookTrainingRequest, request: Request):
+    """Admin books a training slot for a user, bypassing the remaining-sessions check."""
+    await get_admin_user(request)
+
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "user_id": 1})
+    if not target:
+        raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
+
+    slot = await db.schedule_slots.find_one({"id": data.slot_id}, {"_id": 0})
+    if not slot:
+        raise HTTPException(status_code=404, detail="Termin nije pronađen")
+
+    # One booking per day limit still applies
+    existing_today = await db.trainings.find_one({
+        "user_id": user_id,
+        "datum": {"$regex": f"^{slot['datum']}"},
+        "tip": "predstojeći"
+    })
+    if existing_today:
+        raise HTTPException(status_code=400, detail="Korisnik već ima zakazan termin za ovaj dan.")
+
+    # Slot capacity still applies
+    booked_count = await db.trainings.count_documents({
+        "slot_id": data.slot_id, "tip": {"$in": ["predstojeći", "završen"]}
+    })
+    if booked_count >= slot.get("ukupno_mjesta", 3):
+        raise HTTPException(status_code=400, detail="Ovaj termin je popunjen")
+
+    training_id = str(uuid.uuid4())
+    training = {
+        "id": training_id,
+        "user_id": user_id,
+        "slot_id": data.slot_id,
+        "datum": slot["datum"],
+        "vrijeme": slot["vrijeme"],
+        "instruktor": slot.get("instruktor"),
+        "tip": "predstojeći",
+        "trajanje": slot.get("trajanje", 50),
+        "feedback_submitted": False,
+        "booked_by_admin": True,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.trainings.insert_one(training)
+
+    # Decrement membership slots only if the user has sessions left (never go negative)
+    membership = await db.memberships.find_one(
+        {"user_id": user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}}, {"_id": 0}
+    )
+    if membership:
+        # Start the 35-day period from this date if it's the user's first training
+        first_training = await db.trainings.count_documents({
+            "user_id": user_id,
+            "tip": {"$in": ["predstojeći", "završen", "iskoristen"]}
+        })
+        if first_training == 1:
+            booking_date = datetime.strptime(slot["datum"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            await db.memberships.update_one(
+                {"id": membership["id"]},
+                {"$set": {
+                    "datum_pocetka": booking_date.isoformat(),
+                    "datum_isteka": (booking_date + timedelta(days=35)).isoformat()
+                }}
+            )
+        await db.memberships.update_one(
+            {"id": membership["id"]},
+            {"$inc": {"preostali_termini": -1}}
+        )
+
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
+    )
+
+    return {
+        "success": True,
+        "training_id": training_id,
+        "message": "Termin je uspjesno rezervisan za korisnika!"
+    }
+
 # ============== ADMIN PACKAGE FREEZE ==============
 
 @api_router.post("/admin/users/{user_id}/freeze")
@@ -2843,11 +2943,20 @@ async def admin_cancel_booking(training_id: str, data: AdminCancelRequest, reque
 
 @api_router.post("/admin/schedule/generate-week")
 async def admin_generate_week(request: Request):
-    """Generate schedule slots for the next 7 days"""
+    """Generate schedule slots for the next N days (default 7, up to 30).
+
+    Only adds new slots — existing slots are never deleted or overwritten.
+    """
     await get_admin_user(request)
     body = await request.json()
     start_date_str = body.get("start_date")
     days_count = body.get("days", 7)
+    # Support generating slots up to 30 days ahead (clamp to a safe range)
+    try:
+        days_count = int(days_count)
+    except (TypeError, ValueError):
+        days_count = 7
+    days_count = max(1, min(days_count, 30))
     instructors = body.get("instructors", ["Marija Trisic"])
     times = body.get("times", ["08:00", "09:00", "10:00", "11:00", "17:00", "18:00", "19:00", "20:00"])
     spots = body.get("spots_per_slot", 3)
@@ -3103,43 +3212,76 @@ async def admin_analytics_slots(request: Request):
 # ============== ADMIN PUSH NOTIFICATIONS ==============
 
 class AdminSendNotificationRequest(BaseModel):
-    user_id: str = None  # None = send to all
+    # recipients: "all" | "active" | "individual". If omitted, inferred from user_id
+    # (individual when user_id is present, otherwise all) for backward compatibility.
+    recipients: Optional[str] = None
+    user_id: Optional[str] = None
     title: str
-    message: str
+    message: Optional[str] = None
+    body: Optional[str] = None  # alias accepted by clients; falls back to message
+
+
+async def _save_notification(user_id: str, title: str, message: str, now: datetime):
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "type": "admin_message",
+        "title": title,
+        "message": message,
+        "read": False,
+        "created_at": now.isoformat()
+    })
+
 
 @api_router.post("/admin/send-notification")
 async def admin_send_notification(data: AdminSendNotificationRequest, request: Request):
-    """Admin sends push notification to specific user or all users"""
+    """Admin sends a push notification to all users, active members, or one individual."""
     await get_admin_user(request)
     now = datetime.now(timezone.utc)
-    if data.user_id:
-        # Send to specific user
-        await send_push_notification(data.user_id, data.title, data.message)
-        await db.notifications.insert_one({
-            "id": str(uuid.uuid4()),
-            "user_id": data.user_id,
-            "type": "admin_message",
-            "title": data.title,
-            "message": data.message,
-            "read": False,
-            "created_at": now.isoformat()
-        })
+
+    message = data.body or data.message
+    if not message:
+        raise HTTPException(status_code=400, detail="Poruka je obavezna")
+
+    # Resolve recipient mode (fall back to legacy behavior based on user_id)
+    mode = data.recipients
+    if mode not in ("all", "active", "individual"):
+        mode = "individual" if data.user_id else "all"
+
+    if mode == "individual":
+        if not data.user_id:
+            raise HTTPException(status_code=400, detail="user_id je obavezan za individualnu notifikaciju")
+        await send_push_notification(data.user_id, data.title, message)
+        await _save_notification(data.user_id, data.title, message, now)
         return {"success": True, "message": "Notifikacija poslana korisniku"}
-    else:
-        # Send to all users
-        sent = await send_push_to_all_users(data.title, data.message)
-        all_users = await db.users.find({"is_admin": {"$ne": True}}, {"_id": 0, "user_id": 1}).to_list(10000)
-        for u in all_users:
-            await db.notifications.insert_one({
-                "id": str(uuid.uuid4()),
-                "user_id": u["user_id"],
-                "type": "admin_message",
-                "title": data.title,
-                "message": data.message,
-                "read": False,
-                "created_at": now.isoformat()
-            })
-        return {"success": True, "message": f"Notifikacija poslana svim korisnicima ({sent} push-eva)"}
+
+    if mode == "active":
+        # Users with an active membership AND a push token
+        active_user_ids = await db.memberships.distinct("user_id", {"tip": "aktivna"})
+        recipients = await db.users.find(
+            {
+                "user_id": {"$in": active_user_ids},
+                "is_admin": {"$ne": True},
+                "push_token": {"$exists": True, "$ne": ""}
+            },
+            {"_id": 0, "user_id": 1, "push_token": 1}
+        ).to_list(10000)
+        sent = 0
+        for u in recipients:
+            if await send_push_notification(u["user_id"], data.title, message):
+                sent += 1
+            await _save_notification(u["user_id"], data.title, message, now)
+        return {"success": True, "message": f"Notifikacija poslana aktivnim članovima ({sent} push-eva)"}
+
+    # mode == "all": all non-admin users with a push token
+    sent = await send_push_to_all_users(data.title, message)
+    all_users = await db.users.find(
+        {"is_admin": {"$ne": True}, "push_token": {"$exists": True, "$ne": ""}},
+        {"_id": 0, "user_id": 1}
+    ).to_list(10000)
+    for u in all_users:
+        await _save_notification(u["user_id"], data.title, message, now)
+    return {"success": True, "message": f"Notifikacija poslana svim korisnicima ({sent} push-eva)"}
 
 
 @api_router.get("/admin/renewal-reminders/log")
