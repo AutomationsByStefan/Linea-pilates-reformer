@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -212,12 +212,13 @@ class AdminStatusRequest(BaseModel):
 
 class AdminMembershipStartDateRequest(BaseModel):
     start_date: str  # YYYY-MM-DD
+    cijena: Optional[float] = None  # Optionally update the membership price (KM)
 
 class AdminCustomMembershipRequest(BaseModel):
     user_id: str
     package_id: str
     naziv: str
-    cijena: float
+    cijena: Optional[float] = None
     termini: int
     trajanje_dana: int = 35
     start_date: str = None
@@ -2286,9 +2287,12 @@ async def admin_update_membership_start_date(membership_id: str, data: AdminMemb
     start = datetime.strptime(data.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     new_pocetka = start.isoformat()
     new_isteka = (start + timedelta(days=35)).isoformat()
+    update_fields = {"datum_pocetka": new_pocetka, "datum_isteka": new_isteka}
+    if data.cijena is not None:
+        update_fields["cijena"] = data.cijena
     await db.memberships.update_one(
         {"id": membership_id},
-        {"$set": {"datum_pocetka": new_pocetka, "datum_isteka": new_isteka}}
+        {"$set": update_fields}
     )
     updated = await db.memberships.find_one({"id": membership_id}, {"_id": 0})
     return updated
@@ -2387,6 +2391,98 @@ async def admin_financial_overview(request: Request):
         "istekle_clanarine": expired_memberships,
         "novi_klijenti_mjesec": new_clients,
         "najprodavaniji": max(by_package.items(), key=lambda x: x[1]["count"])[0] if by_package else "-"
+    }
+
+# ============== ADMIN FINANCIAL BY MEMBERSHIP START DATE ==============
+
+def _next_month_str(month_str: str) -> str:
+    """Given 'YYYY-MM' return the following month as 'YYYY-MM'."""
+    year, month = int(month_str[:4]), int(month_str[5:7])
+    if month == 12:
+        return f"{year + 1}-01"
+    return f"{year}-{month + 1:02d}"
+
+
+@api_router.get("/admin/financial-by-start-date")
+async def admin_financial_by_start_date(request: Request, from_: str = Query("2026-04", alias="from")):
+    """Financial overview where revenue is attributed to the MONTH of each
+    membership's datum_pocetka (when the package became active), not when the
+    record was created in the system.
+
+    Returns a monthly breakdown from `from` (default 2026-04) up to the current
+    month. Each month lists the activated memberships with the user name,
+    package name, cijena and datum_pocetka. When a membership has no `cijena`,
+    the package's default price is used.
+    """
+    await get_admin_user(request)
+
+    # Validate the start month
+    try:
+        datetime.strptime(from_, "%Y-%m")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Nevažeći format za 'from'. Koristite YYYY-MM.")
+
+    now = datetime.now(timezone.utc)
+    current_month = now.strftime("%Y-%m")
+    if from_ > current_month:
+        from_ = current_month
+
+    # Build the ordered list of months from `from_` to the current month.
+    months = []
+    cursor = from_
+    while cursor <= current_month:
+        months.append(cursor)
+        cursor = _next_month_str(cursor)
+
+    # Lookup maps for default package prices and user names.
+    packages = await db.packages.find({}, {"_id": 0, "id": 1, "naziv": 1, "cijena": 1}).to_list(200)
+    pkg_price_by_id = {p["id"]: p.get("cijena", 0) for p in packages}
+    pkg_price_by_naziv = {p["naziv"]: p.get("cijena", 0) for p in packages}
+
+    users = await db.users.find({}, {"_id": 0, "user_id": 1, "name": 1}).to_list(5000)
+    user_name_by_id = {u["user_id"]: u.get("name", "Nepoznat korisnik") for u in users}
+
+    # Fetch all memberships whose datum_pocetka falls within the requested range.
+    all_memberships = await db.memberships.find(
+        {"datum_pocetka": {"$gte": from_}}, {"_id": 0}
+    ).to_list(20000)
+
+    # Group memberships by the month of their datum_pocetka.
+    by_month = {m: {"month": m, "revenue": 0, "count": 0, "memberships": []} for m in months}
+    for mem in all_memberships:
+        pocetak = mem.get("datum_pocetka")
+        if not pocetak or len(pocetak) < 7:
+            continue
+        month_key = pocetak[:7]
+        if month_key not in by_month:
+            continue
+        # Resolve price: explicit cijena, else package default.
+        cijena = mem.get("cijena")
+        if cijena is None:
+            cijena = pkg_price_by_id.get(mem.get("package_id"))
+        if cijena is None:
+            cijena = pkg_price_by_naziv.get(mem.get("naziv"), 0)
+        cijena = cijena or 0
+        bucket = by_month[month_key]
+        bucket["revenue"] += cijena
+        bucket["count"] += 1
+        bucket["memberships"].append({
+            "membership_id": mem.get("id"),
+            "user_id": mem.get("user_id"),
+            "user_name": user_name_by_id.get(mem.get("user_id"), "Nepoznat korisnik"),
+            "package_name": mem.get("naziv"),
+            "cijena": cijena,
+            "datum_pocetka": pocetak,
+            "tip": mem.get("tip"),
+        })
+
+    monthly = [by_month[m] for m in months]
+    return {
+        "from": from_,
+        "to": current_month,
+        "ukupni_prihod": sum(b["revenue"] for b in monthly),
+        "ukupno_clanarina": sum(b["count"] for b in monthly),
+        "mjeseci": monthly,
     }
 
 # ============== ADMIN MANUAL INCOME ==============
@@ -2517,6 +2613,58 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
         "created_at": now.isoformat()
     })
     return {"success": True, "message": f"Članarina '{data.naziv}' ({data.termini} termina) je kreirana za {user_doc.get('name', 'korisnika')}."}
+
+class AdminHistoricalMembershipRequest(BaseModel):
+    package_name: str
+    cijena: float
+    start_date: str  # YYYY-MM-DD
+    total_sessions: int
+    used_sessions: int = 0
+
+
+@api_router.post("/admin/users/{user_id}/add-historical-membership")
+async def admin_add_historical_membership(user_id: str, data: AdminHistoricalMembershipRequest, request: Request):
+    """Retroactively record a past (expired) membership that a user had before
+    the app existed.
+
+    Always creates an expired/historical membership (tip='istekla') with the
+    given start date (expiry = start + 35 days) and price. No active-membership
+    checks are performed and no existing memberships are deactivated.
+    """
+    admin_user = await get_admin_user(request)
+
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "name": 1})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
+
+    try:
+        start = datetime.strptime(data.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Nevažeći format datuma. Koristite YYYY-MM-DD.")
+
+    remaining = max(data.total_sessions - data.used_sessions, 0)
+    now = datetime.now(timezone.utc)
+    membership = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "naziv": data.package_name,
+        "package_id": None,
+        "tip": "istekla",
+        "preostali_termini": remaining,
+        "ukupni_termini": data.total_sessions,
+        "cijena": data.cijena,
+        "datum_pocetka": start.isoformat(),
+        "datum_isteka": (start + timedelta(days=35)).isoformat(),
+        "historical": True,
+        "created_by": admin_user.get("name", "Admin"),
+        "created_at": now.isoformat(),
+    }
+    await db.memberships.insert_one(membership)
+    return {
+        "success": True,
+        "message": f"Istorijska članarina '{data.package_name}' je dodana za {user_doc.get('name', 'korisnika')}.",
+        "membership": {k: v for k, v in membership.items() if k != "_id"},
+    }
 
 # ============== ADMIN PACKAGE HISTORY ==============
 
