@@ -210,6 +210,9 @@ class AdminFreezeRequest(BaseModel):
 class AdminStatusRequest(BaseModel):
     status: str  # "active", "pending", "expired", "frozen"
 
+class AdminMembershipStartDateRequest(BaseModel):
+    start_date: str  # YYYY-MM-DD
+
 class AdminCustomMembershipRequest(BaseModel):
     user_id: str
     package_id: str
@@ -2272,6 +2275,23 @@ async def admin_unfreeze_package(user_id: str, request: Request):
     )
     await db.users.update_one({"user_id": user_id}, {"$set": {"status": "active"}})
     return {"success": True, "message": f"Članarina je odmrznuta. Produžena za {extra_days} dana."}
+
+@api_router.patch("/admin/memberships/{membership_id}/update-start-date")
+async def admin_update_membership_start_date(membership_id: str, data: AdminMembershipStartDateRequest, request: Request):
+    """Update a membership's start date and recalculate expiry (start + 35 days)."""
+    await get_admin_user(request)
+    membership = await db.memberships.find_one({"id": membership_id}, {"_id": 0})
+    if not membership:
+        raise HTTPException(status_code=404, detail="Članarina nije pronađena")
+    start = datetime.strptime(data.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    new_pocetka = start.isoformat()
+    new_isteka = (start + timedelta(days=35)).isoformat()
+    await db.memberships.update_one(
+        {"id": membership_id},
+        {"$set": {"datum_pocetka": new_pocetka, "datum_isteka": new_isteka}}
+    )
+    updated = await db.memberships.find_one({"id": membership_id}, {"_id": 0})
+    return updated
 
 # ============== ADMIN CLIENT NOTES ==============
 
