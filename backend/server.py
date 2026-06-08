@@ -5,7 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -215,13 +215,15 @@ class AdminMembershipStartDateRequest(BaseModel):
     cijena: Optional[float] = None  # Optionally update the membership price (KM)
 
 class AdminCustomMembershipRequest(BaseModel):
-    user_id: str
-    package_id: str
-    naziv: str
+    # user_id also comes from the path; naziv/termini/cijena fall back to the
+    # package defaults when omitted, so all of these are optional in the body.
+    user_id: Optional[str] = None
+    package_id: Optional[str] = None
+    naziv: Optional[str] = None
     cijena: Optional[float] = None
-    termini: int
+    termini: Optional[int] = None
     trajanje_dana: int = 35
-    start_date: str = None
+    start_date: Optional[str] = None
 
 class ManualIncomeRequest(BaseModel):
     iznos: float
@@ -998,8 +1000,17 @@ async def create_booking(data: BookingRequest, request: Request):
     }
 
 
+class TrialBookingRequest(BaseModel):
+    # The app only sends slot_id; datum/vrijeme/instruktor are derived from the
+    # slot, but are accepted (optional) for backward compatibility.
+    slot_id: str
+    datum: Optional[str] = None
+    vrijeme: Optional[str] = None
+    instruktor: Optional[str] = None
+
+
 @api_router.post("/bookings/trial")
-async def create_trial_booking(data: BookingRequest, request: Request):
+async def create_trial_booking(data: TrialBookingRequest, request: Request):
     """Book a free trial training ("probni trening") for a brand-new member.
 
     Only available to users who have never trained before (no training history).
@@ -1015,14 +1026,17 @@ async def create_trial_booking(data: BookingRequest, request: Request):
     if existing_history > 0:
         raise HTTPException(status_code=400, detail="Probni trening je dostupan samo za nove članice.")
 
-    # Check slot availability (capacity)
+    # The slot must exist — datum/vrijeme/instruktor are taken from it.
     slot = await db.schedule_slots.find_one({"id": data.slot_id}, {"_id": 0})
-    if slot:
-        booked_count = await db.trainings.count_documents({
-            "slot_id": data.slot_id, "tip": {"$in": ["predstojeći", "završen", "probni"]}
-        })
-        if booked_count >= slot.get("ukupno_mjesta", 3):
-            raise HTTPException(status_code=400, detail="Ovaj termin je popunjen")
+    if not slot:
+        raise HTTPException(status_code=404, detail="Termin nije pronađen")
+
+    # Check slot availability (capacity)
+    booked_count = await db.trainings.count_documents({
+        "slot_id": data.slot_id, "tip": {"$in": ["predstojeći", "završen", "probni"]}
+    })
+    if booked_count >= slot.get("ukupno_mjesta", 3):
+        raise HTTPException(status_code=400, detail="Ovaj termin je popunjen")
 
     # One booking per slot
     existing_in_slot = await db.trainings.find_one({
@@ -1038,9 +1052,9 @@ async def create_trial_booking(data: BookingRequest, request: Request):
         "id": training_id,
         "user_id": user.user_id,
         "slot_id": data.slot_id,
-        "datum": data.datum,
-        "vrijeme": data.vrijeme,
-        "instruktor": data.instruktor,
+        "datum": data.datum or slot.get("datum"),
+        "vrijeme": data.vrijeme or slot.get("vrijeme"),
+        "instruktor": data.instruktor or slot.get("instruktor"),
         "tip": "probni",
         "trajanje": 50,
         "feedback_submitted": False,
@@ -2284,7 +2298,9 @@ async def admin_update_membership_start_date(membership_id: str, data: AdminMemb
     membership = await db.memberships.find_one({"id": membership_id}, {"_id": 0})
     if not membership:
         raise HTTPException(status_code=404, detail="Članarina nije pronađena")
-    start = datetime.strptime(data.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    start = _parse_flexible_date(data.start_date)
+    if start is None:
+        raise HTTPException(status_code=400, detail="Nevažeći format datuma. Koristite YYYY-MM-DD.")
     new_pocetka = start.isoformat()
     new_isteka = (start + timedelta(days=35)).isoformat()
     update_fields = {"datum_pocetka": new_pocetka, "datum_isteka": new_isteka}
@@ -2394,6 +2410,26 @@ async def admin_financial_overview(request: Request):
     }
 
 # ============== ADMIN FINANCIAL BY MEMBERSHIP START DATE ==============
+
+def _parse_flexible_date(value: str):
+    """Parse a date that may arrive as 'YYYY-MM-DD' or a full ISO datetime string.
+
+    Returns a timezone-aware datetime (UTC) or None if it can't be parsed.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    # Plain date first (the documented format).
+    try:
+        return datetime.strptime(value[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
+    # Fall back to a full ISO timestamp (e.g. "2026-04-01T00:00:00+00:00").
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
 
 def _next_month_str(month_str: str) -> str:
     """Given 'YYYY-MM' return the following month as 'YYYY-MM'."""
@@ -2575,8 +2611,27 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
     if not user_doc:
         raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
     now = datetime.now(timezone.utc)
+
+    # Resolve package defaults for any fields the client did not provide.
+    pkg = None
+    if data.package_id:
+        pkg = await db.packages.find_one({"id": data.package_id}, {"_id": 0})
+
+    naziv = data.naziv or (pkg.get("naziv") if pkg else None)
+    termini = data.termini if data.termini is not None else (pkg.get("termini") if pkg else None)
+    cijena = data.cijena if data.cijena is not None else (pkg.get("cijena") if pkg else None)
+    trajanje_dana = data.trajanje_dana or (pkg.get("trajanje_dana") if pkg else None) or 35
+
+    if not naziv:
+        raise HTTPException(status_code=400, detail="Naziv paketa je obavezan.")
+    if termini is None:
+        raise HTTPException(status_code=400, detail="Broj termina je obavezan.")
+
     if data.start_date:
-        start = datetime.strptime(data.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        try:
+            start = datetime.strptime(data.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Nevažeći format datuma. Koristite YYYY-MM-DD.")
     else:
         start = now
     # Deactivate any existing active membership
@@ -2587,14 +2642,14 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
     membership = {
         "id": str(uuid.uuid4()),
         "user_id": user_id,
-        "naziv": data.naziv,
+        "naziv": naziv,
         "package_id": data.package_id,
         "tip": "aktivna",
-        "preostali_termini": data.termini,
-        "ukupni_termini": data.termini,
-        "cijena": data.cijena,
+        "preostali_termini": termini,
+        "ukupni_termini": termini,
+        "cijena": cijena,
         "datum_pocetka": start.isoformat(),
-        "datum_isteka": (start + timedelta(days=data.trajanje_dana)).isoformat(),
+        "datum_isteka": (start + timedelta(days=trajanje_dana)).isoformat(),
         "created_by": admin_user.get("name", "Admin"),
         "created_at": now.isoformat()
     }
@@ -2607,19 +2662,22 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
         "user_id": user_id,
         "type": "package_approved",
         "title": "Paket aktiviran",
-        "message": f"Vaš paket {data.naziv} je aktiviran! Imate {data.termini} termina na raspolaganju.",
-        "data": {"package_name": data.naziv},
+        "message": f"Vaš paket {naziv} je aktiviran! Imate {termini} termina na raspolaganju.",
+        "data": {"package_name": naziv},
         "read": False,
         "created_at": now.isoformat()
     })
-    return {"success": True, "message": f"Članarina '{data.naziv}' ({data.termini} termina) je kreirana za {user_doc.get('name', 'korisnika')}."}
+    return {"success": True, "message": f"Članarina '{naziv}' ({termini} termina) je kreirana za {user_doc.get('name', 'korisnika')}."}
 
 class AdminHistoricalMembershipRequest(BaseModel):
-    package_name: str
-    cijena: float
-    start_date: str  # YYYY-MM-DD
-    total_sessions: int
-    used_sessions: int = 0
+    # Accept BOTH the English field names and the Croatian names the mobile app
+    # sends ({ naziv_paketa, cijena, datum_pocetka, ukupno_termina, iskoristeno_termina }).
+    model_config = ConfigDict(populate_by_name=True)
+    package_name: str = Field(validation_alias=AliasChoices("package_name", "naziv_paketa"))
+    cijena: Optional[float] = 0
+    start_date: str = Field(validation_alias=AliasChoices("start_date", "datum_pocetka"))  # YYYY-MM-DD
+    total_sessions: int = Field(validation_alias=AliasChoices("total_sessions", "ukupno_termina"))
+    used_sessions: int = Field(default=0, validation_alias=AliasChoices("used_sessions", "iskoristeno_termina"))
 
 
 @api_router.post("/admin/users/{user_id}/add-historical-membership")
@@ -2637,9 +2695,8 @@ async def admin_add_historical_membership(user_id: str, data: AdminHistoricalMem
     if not user_doc:
         raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
 
-    try:
-        start = datetime.strptime(data.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    except ValueError:
+    start = _parse_flexible_date(data.start_date)
+    if start is None:
         raise HTTPException(status_code=400, detail="Nevažeći format datuma. Koristite YYYY-MM-DD.")
 
     remaining = max(data.total_sessions - data.used_sessions, 0)
@@ -2652,7 +2709,7 @@ async def admin_add_historical_membership(user_id: str, data: AdminHistoricalMem
         "tip": "istekla",
         "preostali_termini": remaining,
         "ukupni_termini": data.total_sessions,
-        "cijena": data.cijena,
+        "cijena": data.cijena if data.cijena is not None else 0,
         "datum_pocetka": start.isoformat(),
         "datum_isteka": (start + timedelta(days=35)).isoformat(),
         "historical": True,
