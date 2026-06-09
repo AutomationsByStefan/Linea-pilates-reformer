@@ -925,7 +925,7 @@ async def create_booking(data: BookingRequest, request: Request):
     slot = await db.schedule_slots.find_one({"id": data.slot_id}, {"_id": 0})
     if slot:
         booked_count = await db.trainings.count_documents({
-            "slot_id": data.slot_id, "tip": {"$in": ["predstojeći", "završen"]}
+            "slot_id": data.slot_id, "tip": {"$in": ["predstojeći", "završen", "probni"]}
         })
         if booked_count >= slot.get("ukupno_mjesta", 3):
             raise HTTPException(status_code=400, detail="Ovaj termin je popunjen")
@@ -1112,7 +1112,7 @@ async def reschedule_booking(training_id: str, data: RescheduleRequest, request:
     if new_slot:
         booked_count = await db.trainings.count_documents({
             "slot_id": data.new_slot_id,
-            "tip": {"$in": ["predstojeći", "završen"]},
+            "tip": {"$in": ["predstojeći", "završen", "probni"]},
             "id": {"$ne": training_id}
         })
         if booked_count >= new_slot.get("ukupno_mjesta", 3):
@@ -1557,11 +1557,12 @@ async def get_schedule():
         {"_id": 0}
     ).sort([("datum", 1), ("vrijeme", 1)]).to_list(5000)
     
-    # Enrich with actual availability
+    # Enrich with actual availability. Trial bookings ("probni") occupy a real
+    # seat just like regular bookings, so they must be counted here too.
     result = []
     for slot in slots:
         booked = await db.trainings.count_documents({
-            "slot_id": slot["id"], "tip": {"$in": ["predstojeći", "završen"]}
+            "slot_id": slot["id"], "tip": {"$in": ["predstojeći", "završen", "probni"]}
         })
         result.append({
             **slot,
@@ -1628,10 +1629,13 @@ async def get_user_stats(request: Request):
         {"user_id": user.user_id, "tip": {"$in": ["završen", "prethodni"]}}
     )
     
-    # Count upcoming trainings
+    # Count upcoming trainings (future-dated, still pending only). datum may be
+    # "YYYY-MM-DD" or a full ISO string; a string $gte against today handles both.
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     upcoming_count = await db.trainings.count_documents(
-        {"user_id": user.user_id, "tip": "predstojeći"}
+        {"user_id": user.user_id, "tip": "predstojeći", "datum": {"$gte": today_str}}
     )
+    upcoming_count = max(0, upcoming_count)
     
     # Get last training date
     last_training = await db.trainings.find_one(
@@ -2478,20 +2482,35 @@ async def admin_financial_by_start_date(request: Request, from_: str = Query("20
     users = await db.users.find({}, {"_id": 0, "user_id": 1, "name": 1}).to_list(5000)
     user_name_by_id = {u["user_id"]: u.get("name", "Nepoznat korisnik") for u in users}
 
-    # Fetch all memberships whose datum_pocetka falls within the requested range.
-    all_memberships = await db.memberships.find(
-        {"datum_pocetka": {"$gte": from_}}, {"_id": 0}
-    ).to_list(20000)
+    # Fetch ALL memberships and bucket them in Python. We deliberately do NOT use a
+    # MongoDB range query like {"datum_pocetka": {"$gte": from_}}: datum_pocetka may
+    # have been stored as a string ("2026-04-01T..."), as a plain date ("2026-04-01"),
+    # or as a BSON Date object. In BSON's type-ordering a Date is always "less than"
+    # any string, so a string range query silently returns nothing for Date-typed
+    # values — which is exactly why this endpoint came back empty.
+    all_memberships = await db.memberships.find({}, {"_id": 0}).to_list(20000)
+
+    def _month_key_of(value):
+        """Normalize a datum_pocetka (str, datetime, or None) to 'YYYY-MM'."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m")
+        if isinstance(value, str) and len(value) >= 7:
+            return value[:7]
+        return None
 
     # Group memberships by the month of their datum_pocetka.
     by_month = {m: {"month": m, "revenue": 0, "count": 0, "memberships": []} for m in months}
     for mem in all_memberships:
         pocetak = mem.get("datum_pocetka")
-        if not pocetak or len(pocetak) < 7:
+        month_key = _month_key_of(pocetak)
+        if month_key is None:
             continue
-        month_key = pocetak[:7]
         if month_key not in by_month:
             continue
+        # Normalize the datum_pocetka we echo back to a string for the response.
+        pocetak_out = pocetak.isoformat() if isinstance(pocetak, datetime) else pocetak
         # Resolve price: explicit cijena, else package default.
         cijena = mem.get("cijena")
         if cijena is None:
@@ -2508,7 +2527,7 @@ async def admin_financial_by_start_date(request: Request, from_: str = Query("20
             "user_name": user_name_by_id.get(mem.get("user_id"), "Nepoznat korisnik"),
             "package_name": mem.get("naziv"),
             "cijena": cijena,
-            "datum_pocetka": pocetak,
+            "datum_pocetka": pocetak_out,
             "tip": mem.get("tip"),
         })
 
@@ -2841,6 +2860,51 @@ async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingReques
         "training": {k: v for k, v in training.items() if k != "_id"},
     }
 
+# ============== ADMIN HISTORICAL DATA MANAGEMENT ==============
+# Lets the admin review and remove historical (retroactively entered) memberships
+# and trainings, so mistakes made while entering past data can be corrected.
+
+
+@api_router.get("/admin/users/{user_id}/historical-memberships")
+async def admin_get_historical_memberships(user_id: str, request: Request):
+    """List all historical (retroactively entered) memberships for a user."""
+    await get_admin_user(request)
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "name": 1})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
+    memberships = await db.memberships.find(
+        {"user_id": user_id, "historical": True}, {"_id": 0}
+    ).sort("datum_pocetka", -1).to_list(200)
+    return {"memberships": memberships}
+
+
+@api_router.delete("/admin/users/{user_id}/historical-memberships/{membership_id}")
+async def admin_delete_historical_membership(user_id: str, membership_id: str, request: Request):
+    """Delete a historical membership (admin correction of past data)."""
+    await get_admin_user(request)
+    membership = await db.memberships.find_one(
+        {"id": membership_id, "user_id": user_id}, {"_id": 0}
+    )
+    if not membership:
+        raise HTTPException(status_code=404, detail="Članarina nije pronađena")
+    await db.memberships.delete_one({"id": membership_id, "user_id": user_id})
+    logger.info(f"Historical membership {membership_id} deleted for user {user_id}")
+    return {"success": True, "message": "Istorijska članarina je obrisana."}
+
+
+@api_router.delete("/admin/users/{user_id}/historical-trainings/{training_id}")
+async def admin_delete_historical_training(user_id: str, training_id: str, request: Request):
+    """Delete a historical training (admin correction of past data)."""
+    await get_admin_user(request)
+    training = await db.trainings.find_one(
+        {"id": training_id, "user_id": user_id}, {"_id": 0}
+    )
+    if not training:
+        raise HTTPException(status_code=404, detail="Trening nije pronađen")
+    await db.trainings.delete_one({"id": training_id, "user_id": user_id})
+    logger.info(f"Historical training {training_id} deleted for user {user_id}")
+    return {"success": True, "message": "Istorijski trening je obrisan."}
+
 # ============== ADMIN PACKAGES CRUD ==============
 
 @api_router.get("/admin/packages")
@@ -3031,7 +3095,9 @@ async def admin_dashboard(request: Request):
     total_users = await db.users.count_documents({"is_admin": {"$ne": True}})
     active_memberships = await db.memberships.count_documents({"tip": "aktivna"})
     today_trainings = await db.trainings.count_documents({
-        "datum": {"$regex": f"^{today_str}"}, "tip": {"$ne": "otkazan"}
+        "datum": {"$regex": f"^{today_str}"},
+        "tip": {"$nin": ["otkazan", "cancelled", "otkazano"]},
+        "status": {"$nin": ["otkazan", "cancelled", "otkazano"]},
     })
     total_bookings = await db.trainings.count_documents({})
     pending_requests = await db.package_requests.count_documents({"status": "pending"})
@@ -3071,6 +3137,7 @@ async def admin_dashboard(request: Request):
 async def admin_get_users(request: Request):
     """Get all users including archived, with full details"""
     await get_admin_user(request)
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     users = await db.users.find({"is_admin": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(500)
     archived_users = await db.archived_users.find({}, {"_id": 0}).sort("archived_at", -1).to_list(500)
     for au in archived_users:
@@ -3087,9 +3154,18 @@ async def admin_get_users(request: Request):
             membership = await db.memberships.find_one(
                 {"user_id": u["user_id"], "tip": {"$in": ["aktivna", "zamrznuta"]}}, {"_id": 0}
             )
+            # "Zakazani" = only upcoming (future-dated) trainings that are still
+            # pending — never cancelled or completed. datum is stored as either
+            # "YYYY-MM-DD" or a full ISO string, so a string $gte against today
+            # works for both. count_documents is inherently >= 0.
             upcoming = await db.trainings.count_documents(
-                {"user_id": u["user_id"], "tip": "predstojeći"}
+                {
+                    "user_id": u["user_id"],
+                    "tip": "predstojeći",
+                    "datum": {"$gte": today_str},
+                }
             )
+            upcoming = max(0, upcoming)
             pending_req = await db.package_requests.find_one(
                 {"user_id": u["user_id"], "status": "pending"}, {"_id": 0}
             )
@@ -3132,10 +3208,10 @@ async def admin_get_schedule(request: Request):
     slots = await db.schedule_slots.find(
         {"datum": {"$gte": today_str, "$lte": end_date}}, {"_id": 0}
     ).sort([("datum", 1), ("vrijeme", 1)]).to_list(5000)
-    # Enrich with booking count
+    # Enrich with booking count. Trial bookings ("probni") also take up a seat.
     for slot in slots:
         booked = await db.trainings.count_documents({
-            "slot_id": slot["id"], "tip": {"$in": ["predstojeći", "završen"]}
+            "slot_id": slot["id"], "tip": {"$in": ["predstojeći", "završen", "probni"]}
         })
         slot["zauzeto"] = booked
         slot["slobodna_mjesta"] = max(0, slot["ukupno_mjesta"] - booked)
@@ -3318,24 +3394,193 @@ async def admin_cancel_training(training_id: str, request: Request):
 
     return {"success": True, "message": "Trening uspješno otkazan."}
 
+# ============== CANCELLATION REQUESTS ==============
+# When a user tries to cancel a training less than 12h before it starts, the app
+# cannot cancel it directly — instead it sends a cancellation REQUEST that an
+# admin reviews. Requests live in the `cancellation_requests` collection.
+
+
+@api_router.post("/trainings/{training_id}/request-cancel")
+async def request_cancel_training(training_id: str, request: Request):
+    """User requests cancellation of an upcoming training (admin must approve)."""
+    user = await get_current_user(request)
+
+    training = await db.trainings.find_one(
+        {"id": training_id, "user_id": user.user_id}, {"_id": 0}
+    )
+    if not training:
+        raise HTTPException(status_code=404, detail="Trening nije pronađen")
+    if training.get("tip") != "predstojeći":
+        raise HTTPException(status_code=400, detail="Samo predstojeći treninzi se mogu otkazati.")
+
+    # Don't allow duplicate pending requests for the same training.
+    existing = await db.cancellation_requests.find_one(
+        {"training_id": training_id, "status": "pending"}, {"_id": 0}
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="Zahtjev za otkazivanje je već poslan.")
+
+    req = {
+        "id": str(uuid.uuid4()),
+        "training_id": training_id,
+        "user_id": user.user_id,
+        "status": "pending",
+        # Snapshot the training details so the admin list is self-contained.
+        "datum": training.get("datum"),
+        "vrijeme": training.get("vrijeme"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.cancellation_requests.insert_one(req)
+    logger.info(f"Cancellation request {req['id']} created for training {training_id} by {user.user_id}")
+
+    return {
+        "success": True,
+        "message": "Zahtjev za otkazivanje je poslan. Sačekajte odobrenje administratora.",
+        "request_id": req["id"],
+    }
+
+
+@api_router.get("/admin/cancellation-requests")
+async def admin_list_cancellation_requests(request: Request):
+    """List all pending cancellation requests with user and training details."""
+    await get_admin_user(request)
+    requests = await db.cancellation_requests.find(
+        {"status": "pending"}, {"_id": 0}
+    ).sort("created_at", -1).to_list(1000)
+    for r in requests:
+        user = await db.users.find_one(
+            {"user_id": r.get("user_id")}, {"_id": 0, "name": 1, "phone": 1}
+        )
+        r["user_name"] = user.get("name", "Nepoznat") if user else "Nepoznat"
+        r["user_phone"] = user.get("phone", "") if user else ""
+        # Refresh training details in case they aren't snapshotted on the request.
+        training = await db.trainings.find_one(
+            {"id": r.get("training_id")}, {"_id": 0, "datum": 1, "vrijeme": 1, "tip": 1, "instruktor": 1}
+        )
+        if training:
+            r["datum"] = r.get("datum") or training.get("datum")
+            r["vrijeme"] = r.get("vrijeme") or training.get("vrijeme")
+            r["instruktor"] = training.get("instruktor")
+            r["training_tip"] = training.get("tip")
+    return requests
+
+
+@api_router.post("/admin/cancellation-requests/{request_id}/approve")
+async def admin_approve_cancellation_request(request_id: str, request: Request):
+    """Approve a cancellation request: cancel the training, return the session to
+    the user's active membership and free the slot."""
+    await get_admin_user(request)
+
+    req = await db.cancellation_requests.find_one(
+        {"id": request_id, "status": "pending"}, {"_id": 0}
+    )
+    if not req:
+        raise HTTPException(status_code=404, detail="Zahtjev nije pronađen")
+
+    training = await db.trainings.find_one({"id": req["training_id"]}, {"_id": 0})
+    if training and training.get("tip") != "otkazan":
+        # Cancel the training — slot availability is derived by counting trainings,
+        # so setting tip to "otkazan" frees the slot automatically.
+        await db.trainings.update_one(
+            {"id": req["training_id"]},
+            {"$set": {"tip": "otkazan", "razlog_otkazivanja": "Odobren zahtjev za otkazivanje"}},
+        )
+        # Return the session to the user's active membership.
+        membership = await db.memberships.find_one(
+            {"user_id": req["user_id"], "tip": "aktivna"}, {"_id": 0}
+        )
+        if membership:
+            await db.memberships.update_one(
+                {"id": membership["id"]},
+                {"$inc": {"preostali_termini": 1}},
+            )
+
+    await db.cancellation_requests.update_one(
+        {"id": request_id},
+        {"$set": {"status": "approved", "resolved_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
+    datum = req.get("datum", "")
+    vrijeme = req.get("vrijeme", "")
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": req["user_id"],
+        "type": "cancellation_approved",
+        "title": "Otkazivanje odobreno",
+        "message": f"Vaš zahtjev za otkazivanje termina ({datum} u {vrijeme}) je odobren. Termin je vraćen.".strip(),
+        "data": {"training_id": req["training_id"]},
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await send_push_notification(
+        req["user_id"],
+        "Otkazivanje odobreno",
+        f"Vaš zahtjev za otkazivanje termina ({datum} u {vrijeme}) je odobren.",
+    )
+
+    return {"success": True, "message": "Zahtjev je odobren. Termin je otkazan i vraćen korisniku."}
+
+
+@api_router.post("/admin/cancellation-requests/{request_id}/reject")
+async def admin_reject_cancellation_request(request_id: str, request: Request):
+    """Reject a cancellation request: the training stands and counts as used."""
+    await get_admin_user(request)
+
+    req = await db.cancellation_requests.find_one(
+        {"id": request_id, "status": "pending"}, {"_id": 0}
+    )
+    if not req:
+        raise HTTPException(status_code=404, detail="Zahtjev nije pronađen")
+
+    await db.cancellation_requests.update_one(
+        {"id": request_id},
+        {"$set": {"status": "rejected", "resolved_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
+    # The training is left as-is (predstojeći → it stands and counts as used);
+    # no session is returned to the membership.
+    datum = req.get("datum", "")
+    vrijeme = req.get("vrijeme", "")
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": req["user_id"],
+        "type": "cancellation_rejected",
+        "title": "Otkazivanje odbijeno",
+        "message": f"Vaš zahtjev za otkazivanje termina ({datum} u {vrijeme}) je odbijen. Termin se računa kao iskorišten.".strip(),
+        "data": {"training_id": req["training_id"]},
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await send_push_notification(
+        req["user_id"],
+        "Otkazivanje odbijeno",
+        f"Vaš zahtjev za otkazivanje termina ({datum} u {vrijeme}) je odbijen.",
+    )
+
+    return {"success": True, "message": "Zahtjev je odbijen. Termin se računa kao iskorišten."}
+
 # ============== ADMIN BULK SCHEDULE ==============
 
 @api_router.post("/admin/schedule/generate-week")
 async def admin_generate_week(request: Request):
-    """Generate schedule slots for the next N days (default 7, up to 30).
+    """Generate schedule slots for the next N days (default 7, up to 60).
 
-    Only adds new slots — existing slots are never deleted or overwritten.
+    Reads the `days` value sent by the client (the frontend sends e.g. 30) and
+    generates that many days of slots. Only adds new slots — existing slots are
+    never deleted or overwritten.
     """
     await get_admin_user(request)
     body = await request.json()
     start_date_str = body.get("start_date")
     days_count = body.get("days", 7)
-    # Support generating slots up to 30 days ahead (clamp to a safe range)
+    # Honor the requested number of days, clamped to a safe range (1–60) that
+    # matches the frontend's allowed input. Previously this was capped at a lower
+    # value, which prevented generating the full requested range.
     try:
         days_count = int(days_count)
     except (TypeError, ValueError):
         days_count = 7
-    days_count = max(1, min(days_count, 30))
+    days_count = max(1, min(days_count, 60))
     instructors = body.get("instructors", ["Marija Trisic"])
     times = body.get("times", ["08:00", "09:00", "10:00", "11:00", "17:00", "18:00", "19:00", "20:00"])
     spots = body.get("spots_per_slot", 3)
@@ -3390,8 +3635,16 @@ async def admin_get_today_trainings(request: Request):
     """Return all non-cancelled trainings for today sorted by time"""
     await get_admin_user(request)
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Exclude cancelled trainings regardless of whether the cancellation was
+    # recorded on `tip` or on a separate `status` field, and regardless of the
+    # exact wording ("otkazan" / "cancelled"). $nin also matches docs missing
+    # the field, so non-cancelled trainings are still returned.
     trainings = await db.trainings.find(
-        {"datum": {"$regex": f"^{today_str}"}, "tip": {"$ne": "otkazan"}},
+        {
+            "datum": {"$regex": f"^{today_str}"},
+            "tip": {"$nin": ["otkazan", "cancelled", "otkazano"]},
+            "status": {"$nin": ["otkazan", "cancelled", "otkazano"]},
+        },
         {"_id": 0}
     ).sort("vrijeme", 1).to_list(1000)
     # Enrich with user names
