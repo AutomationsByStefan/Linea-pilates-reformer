@@ -2491,13 +2491,29 @@ async def admin_financial_by_start_date(request: Request, from_: str = Query("20
     all_memberships = await db.memberships.find({}, {"_id": 0}).to_list(20000)
 
     def _month_key_of(value):
-        """Normalize a datum_pocetka (str, datetime, or None) to 'YYYY-MM'."""
+        """Normalize a datum_pocetka (str, datetime, or None) to 'YYYY-MM'.
+
+        Handles the several shapes datum_pocetka can take in the database:
+        BSON Date/datetime, ISO strings ("2026-04-01T..." / "2026-04-01"), and
+        the localized "DD.MM.YYYY" form.
+        """
         if value is None:
             return None
         if isinstance(value, datetime):
             return value.strftime("%Y-%m")
-        if isinstance(value, str) and len(value) >= 7:
-            return value[:7]
+        if isinstance(value, str):
+            value = value.strip()
+            # DD.MM.YYYY (or D.M.YYYY) — convert to YYYY-MM.
+            if "." in value:
+                parts = value.split(".")
+                if len(parts) >= 3 and parts[2].strip()[:4].isdigit():
+                    year = parts[2].strip()[:4]
+                    month = parts[1].strip().zfill(2)
+                    return f"{year}-{month}"
+                return None
+            # ISO string "YYYY-MM-DD..." — first 7 chars are "YYYY-MM".
+            if len(value) >= 7 and value[:4].isdigit():
+                return value[:7]
         return None
 
     # Group memberships by the month of their datum_pocetka.
@@ -2756,6 +2772,92 @@ async def admin_get_membership_history(user_id: str, request: Request):
         {"user_id": user_id}, {"_id": 0}
     ).sort("created_at", -1).to_list(100)
     return {"memberships": memberships, "requests": requests}
+
+
+@api_router.get("/admin/users/{user_id}/full-history")
+async def admin_get_full_history(user_id: str, request: Request):
+    """Complete history for a single user: every membership (active & expired)
+    and every training (booked, used, trial, cancelled, historical).
+
+    Memberships are sorted by datum_pocetka (newest first) and trainings by
+    datum (newest first). Both fields can be stored as ISO strings, localized
+    "DD.MM.YYYY" strings, or datetime objects, so sorting is done on a
+    normalized key in Python rather than relying on a MongoDB sort.
+    """
+    await get_admin_user(request)
+
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "name": 1})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="Korisnik nije pronađen")
+
+    def _sort_key(value):
+        """Normalize a date value to a chronologically sortable string."""
+        if value is None:
+            return ""
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, str):
+            value = value.strip()
+            # "DD.MM.YYYY[ HH:MM]" -> "YYYY-MM-DD" so it sorts chronologically.
+            if "." in value and "-" not in value:
+                date_part = value.split(" ")[0]
+                parts = date_part.split(".")
+                if len(parts) >= 3 and parts[2].strip()[:4].isdigit():
+                    return f"{parts[2].strip()[:4]}-{parts[1].strip().zfill(2)}-{parts[0].strip().zfill(2)}"
+            return value
+        return ""
+
+    def _iso(value):
+        return value.isoformat() if isinstance(value, datetime) else value
+
+    # --- Memberships (active and expired) ---
+    raw_memberships = await db.memberships.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+    memberships = []
+    for m in raw_memberships:
+        ukupni = m.get("ukupni_termini", 0) or 0
+        preostali = m.get("preostali_termini")
+        if preostali is None:
+            preostali = 0
+        # Prefer an explicit iskoristeni_termini; otherwise derive it.
+        iskoristeni = m.get("iskoristeni_termini")
+        if iskoristeni is None:
+            iskoristeni = max(0, ukupni - preostali)
+        memberships.append({
+            "id": m.get("id"),
+            "package_name": m.get("naziv"),
+            "cijena": m.get("cijena", 0) or 0,
+            "datum_pocetka": _iso(m.get("datum_pocetka")),
+            "datum_isteka": _iso(m.get("datum_isteka")),
+            "ukupni_termini": ukupni,
+            "preostali_termini": preostali,
+            "iskoristeni_termini": iskoristeni,
+            "tip": m.get("tip"),
+            "status": m.get("status", m.get("tip")),
+            "historical": bool(m.get("historical", False)),
+        })
+    memberships.sort(key=lambda x: _sort_key(x["datum_pocetka"]), reverse=True)
+
+    # --- Trainings (all statuses) ---
+    raw_trainings = await db.trainings.find({"user_id": user_id}, {"_id": 0}).to_list(10000)
+    trainings = []
+    for t in raw_trainings:
+        trainings.append({
+            "id": t.get("id"),
+            "datum": _iso(t.get("datum")),
+            "vrijeme": t.get("vrijeme"),
+            "instruktor": t.get("instruktor"),
+            "tip": t.get("tip"),
+            "status": t.get("status", t.get("tip")),
+            "historical": bool(t.get("historical", False)),
+        })
+    trainings.sort(key=lambda x: _sort_key(x["datum"]), reverse=True)
+
+    return {
+        "user_id": user_id,
+        "user_name": user_doc.get("name", "Nepoznat korisnik"),
+        "memberships": memberships,
+        "trainings": trainings,
+    }
 
 
 class AdminAddPastTrainingRequest(BaseModel):
