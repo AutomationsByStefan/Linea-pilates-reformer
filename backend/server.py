@@ -16,6 +16,7 @@ import asyncio
 import re
 import random
 import smtplib
+import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -1746,17 +1747,11 @@ def _validate_pin(value: str, field_name: str = "PIN") -> None:
 
 
 def _send_reset_email(to_email: str, code: str) -> None:
-    """Send PIN reset code via Gmail SMTP. Raises 500 on config/send failure."""
-    smtp_email = os.environ.get("SMTP_EMAIL")
-    smtp_password = os.environ.get("SMTP_PASSWORD")
-    if not smtp_email or not smtp_password:
-        logger.error("SMTP credentials missing (SMTP_EMAIL / SMTP_PASSWORD)")
+    """Send PIN reset code via Resend HTTP API. Raises 500 on config/send failure."""
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        logger.error("RESEND_API_KEY missing")
         raise HTTPException(status_code=500, detail="Servis za slanje emaila nije konfigurisan.")
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Linea Pilates — Reset PIN kod"
-    msg["From"] = smtp_email
-    msg["To"] = to_email
 
     text_body = (
         f"Pozdrav,\n\n"
@@ -1775,17 +1770,33 @@ def _send_reset_email(to_email: str, code: str) -> None:
       <p style="color:#888;font-size:12px;">Ako niste zatražili reset PIN-a, ignorišite ovu poruku.</p>
     </body></html>
     """
-    msg.attach(MIMEText(text_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
+    payload = {
+        "from": "Linea Pilates <podrska@lineapilatesreformer.com>",
+        "to": [to_email],
+        "subject": "Linea Pilates — Reset PIN kod",
+        "html": html_body,
+        "text": text_body,
+    }
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as server:
-            server.starttls()
-            server.login(smtp_email, smtp_password)
-            server.sendmail(smtp_email, [to_email], msg.as_string())
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=15,
+        )
     except Exception as e:
-        logger.error(f"SMTP send failed to {to_email}: {e}")
+        logger.error(f"Resend request failed to {to_email}: {e}")
         raise HTTPException(status_code=500, detail="Slanje emaila nije uspjelo. Pokušajte ponovo kasnije.")
+
+    if resp.status_code not in (200, 201, 202):
+        logger.error(f"Resend send failed to {to_email}: status={resp.status_code} body={resp.text}")
+        raise HTTPException(status_code=500, detail="Slanje emaila nije uspjelo. Pokušajte ponovo kasnije.")
+
+    logger.info(f"Reset email sent to {to_email} via Resend")
 
 
 @api_router.put("/user/profile")
