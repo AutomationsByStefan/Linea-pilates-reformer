@@ -1985,6 +1985,33 @@ async def reset_pin(data: ResetPinRequest):
     return {"success": True, "message": "PIN je uspješno resetovan. Prijavite se sa novim PIN-om."}
 
 
+async def settle_minus_sessions(user_id: str, new_membership_id: str, total_sessions: int):
+    """Izmiruje "minus" pri aktivaciji novog paketa.
+
+    Broji koliko je treninga označeno sa minus:true (to je isti broj koji puni
+    banner preko /auth/me), oduzima ih od termina novog paketa uz clamp na 0
+    (paket nikad ne ide u negativno), te briše minus flag sa tih treninga kako
+    bi banner nestao.
+
+    Vraća (minus_count, preostali_termini) — broj oduzetih i konačno stanje.
+    """
+    minus_count = await db.trainings.count_documents(
+        {"user_id": user_id, "minus": True}
+    )
+    if minus_count == 0:
+        return 0, total_sessions
+    novo_stanje = max(0, total_sessions - minus_count)
+    await db.memberships.update_one(
+        {"id": new_membership_id},
+        {"$set": {"preostali_termini": novo_stanje}}
+    )
+    await db.trainings.update_many(
+        {"user_id": user_id, "minus": True},
+        {"$unset": {"minus": ""}}
+    )
+    return minus_count, novo_stanje
+
+
 # ============== PACKAGE REQUESTS ==============
 
 @api_router.post("/packages/request")
@@ -2100,6 +2127,15 @@ async def admin_approve_package(request_id: str, request: Request):
         {"$set": {"tip": "prethodna"}}
     )
     await db.memberships.insert_one(membership)
+    # Izmiri eventualni minus (oduzmi minus treninge od novog paketa, clamp na 0,
+    # obriši minus flag da banner nestane).
+    minus_count, preostali = await settle_minus_sessions(
+        pkg_req["user_id"], membership["id"], pkg_req["package_sessions"]
+    )
+    if minus_count > 0:
+        termini_tekst = f"{preostali} termina ({minus_count} oduzeta za minus)"
+    else:
+        termini_tekst = f"{pkg_req['package_sessions']} termina"
     admin_name = admin_user.get("name", admin_user.get("email", "Admin"))
     await db.package_requests.update_one(
         {"id": request_id},
@@ -2111,7 +2147,7 @@ async def admin_approve_package(request_id: str, request: Request):
         "user_id": pkg_req["user_id"],
         "type": "package_approved",
         "title": "Paket aktiviran",
-        "message": f"Vaš paket {pkg_req['package_name']} je aktiviran! Imate {pkg_req['package_sessions']} termina na raspolaganju.",
+        "message": f"Vaš paket {pkg_req['package_name']} je aktiviran! Imate {termini_tekst} na raspolaganju.",
         "data": {"package_name": pkg_req["package_name"]},
         "read": False,
         "created_at": now.isoformat()
@@ -2120,7 +2156,7 @@ async def admin_approve_package(request_id: str, request: Request):
     await send_push_notification(
         pkg_req["user_id"],
         "Paket odobren",
-        f"Vaš paket {pkg_req['package_name']} je aktiviran! Imate {pkg_req['package_sessions']} termina."
+        f"Vaš paket {pkg_req['package_name']} je aktiviran! Imate {termini_tekst}."
     )
     return {"success": True, "message": f"Paket {pkg_req['package_name']} je aktiviran za korisnika {pkg_req['user_name']}."}
 
@@ -2700,6 +2736,13 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
         "created_at": now.isoformat()
     }
     await db.memberships.insert_one(membership)
+    # Izmiri eventualni minus (oduzmi minus treninge od novog paketa, clamp na 0,
+    # obriši minus flag da banner nestane).
+    minus_count, preostali = await settle_minus_sessions(user_id, membership["id"], termini)
+    if minus_count > 0:
+        termini_tekst = f"{preostali} termina ({minus_count} oduzeta za minus)"
+    else:
+        termini_tekst = f"{termini} termina"
     # Conversion tracking: mark recent renewal reminders as converted (within 7 days)
     await mark_renewal_conversions(user_id, "custom_membership")
     # Notify user
@@ -2708,7 +2751,7 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
         "user_id": user_id,
         "type": "package_approved",
         "title": "Paket aktiviran",
-        "message": f"Vaš paket {naziv} je aktiviran! Imate {termini} termina na raspolaganju.",
+        "message": f"Vaš paket {naziv} je aktiviran! Imate {termini_tekst} na raspolaganju.",
         "data": {"package_name": naziv},
         "read": False,
         "created_at": now.isoformat()
