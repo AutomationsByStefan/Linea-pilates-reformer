@@ -263,19 +263,64 @@ def detect_phone_country(phone: str) -> str:
 async def expire_overdue_memberships(user_id: str):
     """Mark any active membership past its expiry date as expired.
 
-    Sets tip to "istekla" and zeroes out preostali_termini. datum_isteka is stored
-    as a timezone-aware ISO string, so a lexicographic string comparison against the
-    current ISO timestamp is correct (same convention used elsewhere in this file).
+    Sets tip to "istekla". Surplus sessions are forfeited (+3 -> 0) but any debt is
+    kept (-2 -> -2) via preostali_termini = min(preostali_termini, 0), so the live
+    minus stays correct through expiry. datum_isteka is stored as a timezone-aware
+    ISO string, so a lexicographic string comparison against the current ISO
+    timestamp is correct (same convention used elsewhere in this file).
     """
     now_iso = datetime.now(timezone.utc).isoformat()
+    # Pipeline update (MongoDB 4.2+): višak termina propada (+3 -> 0), dug se
+    # zadržava (-2 -> -2).
     await db.memberships.update_many(
         {
             "user_id": user_id,
             "tip": "aktivna",
             "datum_isteka": {"$ne": None, "$lt": now_iso},
         },
-        {"$set": {"tip": "istekla", "preostali_termini": 0}},
+        [
+            {"$set": {
+                "tip": "istekla",
+                "preostali_termini": {"$min": ["$preostali_termini", 0]},
+            }}
+        ],
     )
+
+
+async def compute_minus(user_id: str) -> int:
+    """Računa broj "minus" treninga UŽIVO, bez minus:true flaga.
+
+        minus = max(0, -Σ preostali_termini)   # dug nošen u balansima paketa (< 0)
+              + broj "consuming" treninga       # samo kad članica NEMA nijedan paket
+
+    "Consuming" = tip ∈ {predstojeći, završen, iskoristen} (probni i otkazan se NE
+    broje → probni nikad nije minus; otkazivanje samo-zaliječi minus).
+    """
+    # Označi istekle pakete prije računa (idempotentno; čuva dug po pravilu iznad).
+    await expire_overdue_memberships(user_id)
+
+    memberships = await db.memberships.find(
+        {"user_id": user_id},
+        {"_id": 0, "preostali_termini": 1},
+    ).to_list(1000)
+
+    # Sabirak 1: dug nošen u balansima paketa (negativan preostali_termini).
+    balance_debt = sum(
+        -m.get("preostali_termini", 0)
+        for m in memberships
+        if (m.get("preostali_termini", 0) or 0) < 0
+    )
+
+    # Sabirak 2: rubni slučaj — članica bez ijednog paketa da ponese dug
+    # (npr. admin ručni unos / booking bez ikakve članarine).
+    uncovered = 0
+    if not memberships:
+        uncovered = await db.trainings.count_documents({
+            "user_id": user_id,
+            "tip": {"$in": ["predstojeći", "završen", "iskoristen"]},
+        })
+
+    return balance_debt + uncovered
 
 
 async def get_current_user(request: Request) -> User:
@@ -574,10 +619,9 @@ async def get_me(request: Request):
         {"user_id": user.user_id},
         {"$set": {"last_activity": datetime.now(timezone.utc).isoformat()}}
     )
-    # Count of "minus" trainings (booked with no membership or while in session deficit)
-    user_doc["minus_treninzi"] = await db.trainings.count_documents(
-        {"user_id": user.user_id, "minus": True}
-    )
+    # Minus se računa UŽIVO (negativan balans paketa + nepokriveni treninzi),
+    # a ne iz zamrznutog minus:true flaga. Vidi compute_minus().
+    user_doc["minus_treninzi"] = await compute_minus(user.user_id)
     return user_doc
 
 @api_router.post("/auth/logout")
@@ -940,12 +984,6 @@ async def create_booking(data: BookingRequest, request: Request):
     if existing_in_slot:
         raise HTTPException(status_code=400, detail="Već imate rezervaciju za ovaj termin.")
 
-    # Determine whether this is a "minus" (deficit) booking:
-    #  - no active membership at all, or
-    #  - active membership with 0 or fewer remaining sessions.
-    remaining = membership.get("preostali_termini", 0) if membership else 0
-    is_minus = (membership is None) or (remaining <= 0)
-
     # Create training record
     training_id = str(uuid.uuid4())
     training = {
@@ -960,8 +998,6 @@ async def create_booking(data: BookingRequest, request: Request):
         "feedback_submitted": False,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    if is_minus:
-        training["minus"] = True
     await db.trainings.insert_one(training)
 
     # If this is user's first training on this membership, start the 35-day period from this date
@@ -979,12 +1015,20 @@ async def create_booking(data: BookingRequest, request: Request):
             }}
         )
 
-    # Decrement membership sessions. If the user has an active membership we always
-    # decrement, allowing the balance to go negative (-1, -2, ...). With no active
-    # membership nothing is deducted and the training stays flagged as minus.
-    if membership:
+    # Dekrementiraj nosioca duga. Ako postoji aktivan paket -> njega (balans smije
+    # u minus). Ako ne, ali članica je ranije imala paket -> najnoviji paket (dug
+    # ostaje brojiv i izmiruje se na sljedećoj aktivaciji). Ako paketa nema -> ništa
+    # (compute_minus() takve treninge broji kroz Sabirak 2).
+    debt_target = membership
+    if debt_target is None:
+        debt_target = await db.memberships.find_one(
+            {"user_id": user.user_id},
+            {"_id": 0, "id": 1},
+            sort=[("created_at", -1)],
+        )
+    if debt_target:
         await db.memberships.update_one(
-            {"id": membership["id"]},
+            {"id": debt_target["id"]},
             {"$inc": {"preostali_termini": -1}}
         )
     
@@ -1986,30 +2030,34 @@ async def reset_pin(data: ResetPinRequest):
 
 
 async def settle_minus_sessions(user_id: str, new_membership_id: str, total_sessions: int):
-    """Izmiruje "minus" pri aktivaciji novog paketa.
+    """Izmiruje "minus" pri aktivaciji novog paketa — model balansa.
 
-    Broji koliko je treninga označeno sa minus:true (to je isti broj koji puni
-    banner preko /auth/me), oduzima ih od termina novog paketa uz clamp na 0
-    (paket nikad ne ide u negativno), te briše minus flag sa tih treninga kako
-    bi banner nestao.
+    Dug = -Σ preostali_termini preko korisnikovih paketa koji su u minusu (< 0),
+    izuzev novog paketa. Oduzima se od termina novog paketa (clamp na 0), a stari
+    negativni balansi se postavljaju na 0 (dug izmiren). Više se NE oslanja na
+    minus:true flag (čime nestaje i bug brojanja otkazanih minus treninga).
 
-    Vraća (minus_count, preostali_termini) — broj oduzetih i konačno stanje.
+    Vraća (dug, novo_stanje) — broj oduzetih i konačno stanje novog paketa.
     """
-    minus_count = await db.trainings.count_documents(
-        {"user_id": user_id, "minus": True}
-    )
-    if minus_count == 0:
+    debt_filter = {
+        "user_id": user_id,
+        "id": {"$ne": new_membership_id},
+        "preostali_termini": {"$lt": 0},
+    }
+    debt_docs = await db.memberships.find(
+        debt_filter, {"_id": 0, "preostali_termini": 1}
+    ).to_list(1000)
+    dug = sum(-d["preostali_termini"] for d in debt_docs)
+    if dug == 0:
         return 0, total_sessions
-    novo_stanje = max(0, total_sessions - minus_count)
+    novo_stanje = max(0, total_sessions - dug)
     await db.memberships.update_one(
         {"id": new_membership_id},
-        {"$set": {"preostali_termini": novo_stanje}}
+        {"$set": {"preostali_termini": novo_stanje}},
     )
-    await db.trainings.update_many(
-        {"user_id": user_id, "minus": True},
-        {"$unset": {"minus": ""}}
-    )
-    return minus_count, novo_stanje
+    # Izmiri stare dugove: negativan balans -> 0.
+    await db.memberships.update_many(debt_filter, {"$set": {"preostali_termini": 0}})
+    return dug, novo_stanje
 
 
 # ============== PACKAGE REQUESTS ==============
@@ -2967,29 +3015,33 @@ async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingReques
         training["historical"] = True
     await db.trainings.insert_one(training)
 
-    # Decrement active membership's preostali_termini by 1 (only if > 0).
-    # Historical trainings (from previous/expired packages) never deduct a session.
+    # Knjiži trening na nosioca duga (osim historical, koji nikad ne dira termine).
+    # Aktivan paket -> njega (balans smije u minus = dug). Ako nema aktivnog ->
+    # najnoviji paket. Ako paketa uopšte nema -> ništa (hvata compute_minus Sabirak 2).
     deducted = False
     remaining_after = None
-    active_membership = None
+    debt_target = None
     if not data.historical:
-        active_membership = await db.memberships.find_one(
-            {"user_id": user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}},
+        debt_target = await db.memberships.find_one(
+            {"user_id": user_id, "tip": "aktivna"},
             {"_id": 0, "id": 1, "preostali_termini": 1, "naziv": 1},
+        ) or await db.memberships.find_one(
+            {"user_id": user_id},
+            {"_id": 0, "id": 1, "preostali_termini": 1, "naziv": 1},
+            sort=[("created_at", -1)],
         )
-    if active_membership:
-        update_result = await db.memberships.update_one(
-            {"id": active_membership["id"], "preostali_termini": {"$gt": 0}},
+    if debt_target:
+        await db.memberships.update_one(
+            {"id": debt_target["id"]},
             {"$inc": {"preostali_termini": -1}},
         )
-        if update_result.modified_count == 1:
-            deducted = True
-            remaining_after = active_membership["preostali_termini"] - 1
-            # Link training to membership for audit trail
-            await db.trainings.update_one(
-                {"id": training["id"]},
-                {"$set": {"membership_id": active_membership["id"]}},
-            )
+        remaining_after = (debt_target.get("preostali_termini", 0) or 0) - 1
+        deducted = remaining_after >= 0  # "deducted" = pokriveno; < 0 znači minus
+        # Link training to membership for audit trail
+        await db.trainings.update_one(
+            {"id": training["id"]},
+            {"$set": {"membership_id": debt_target["id"]}},
+        )
 
     user_name = user_doc.get("name", "korisnika")
     if data.historical:
@@ -3002,10 +3054,15 @@ async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingReques
             f"Prošli trening dodan za {user_name} ({data.datum} u {data.vrijeme}). "
             f"Oduzet 1 termin iz aktivne članarine (preostalo: {remaining_after})."
         )
+    elif debt_target:
+        message = (
+            f"Prošli trening dodan za {user_name} ({data.datum} u {data.vrijeme}). "
+            f"Članica nema pokriće — trening se broji kao MINUS (dug: {-remaining_after})."
+        )
     else:
         message = (
             f"Prošli trening dodan za {user_name} ({data.datum} u {data.vrijeme}). "
-            f"Nema aktivne članarine — trening zabilježen samo u historiji."
+            f"Nema nijedne članarine — trening se broji kao MINUS."
         )
 
     return {
