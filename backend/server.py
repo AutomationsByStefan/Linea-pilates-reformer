@@ -259,6 +259,33 @@ def detect_phone_country(phone: str) -> str:
         return "BA"  # Bosnian mobile prefixes
     return "BA"  # Default to Bosnia
 
+def normalize_phone(phone: str) -> str:
+    """Normalize a phone number for consistent storage and comparison.
+
+    - Strips whitespace, dashes, parentheses.
+    - Converts a leading "00" international prefix to "+".
+    - Drops a leading national zero that follows the country code
+      (e.g. +387066... -> +38766...), which users often type out of habit.
+    """
+    if not phone:
+        return phone
+    cleaned = (
+        phone.strip()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("(", "")
+        .replace(")", "")
+    )
+    # Normalize "00" international prefix to "+"
+    if cleaned.startswith("00"):
+        cleaned = "+" + cleaned[2:]
+    # Drop a leading zero in the national part after the country code
+    for cc in ("+381", "+387"):
+        if cleaned.startswith(cc) and cleaned[len(cc):len(cc) + 1] == "0":
+            cleaned = cc + cleaned[len(cc) + 1:]
+            break
+    return cleaned
+
 # ============== HELPER FUNCTIONS ==============
 
 async def expire_overdue_memberships(user_id: str):
@@ -642,7 +669,7 @@ async def logout(request: Request, response: Response):
 @api_router.post("/auth/phone/check")
 async def check_phone(data: PhoneAuthRequest):
     """Check if phone number exists in the system"""
-    existing_user = await db.users.find_one({"phone": data.phone}, {"_id": 0})
+    existing_user = await db.users.find_one({"phone": normalize_phone(data.phone)}, {"_id": 0})
     return {
         "exists": existing_user is not None,
         "name": existing_user.get("name", "") if existing_user else ""
@@ -651,7 +678,7 @@ async def check_phone(data: PhoneAuthRequest):
 @api_router.post("/auth/phone/send-otp")
 async def send_otp_compat(data: PhoneAuthRequest):
     """Backward compatible: check phone exists"""
-    existing_user = await db.users.find_one({"phone": data.phone}, {"_id": 0})
+    existing_user = await db.users.find_one({"phone": normalize_phone(data.phone)}, {"_id": 0})
     return {
         "success": True,
         "user_exists": existing_user is not None,
@@ -661,7 +688,7 @@ async def send_otp_compat(data: PhoneAuthRequest):
 @api_router.post("/auth/phone/login")
 async def phone_login(data: PhoneLoginRequest, response: Response):
     """Login with phone + 4-digit PIN"""
-    user_doc = await db.users.find_one({"phone": data.phone}, {"_id": 0, "pin_hash": 1, "user_id": 1})
+    user_doc = await db.users.find_one({"phone": normalize_phone(data.phone)}, {"_id": 0, "pin_hash": 1, "user_id": 1})
     if not user_doc:
         raise HTTPException(status_code=404, detail="Korisnik nije pronadjen")
     pin_hash = user_doc.get("pin_hash")
@@ -702,11 +729,25 @@ async def verify_otp(data: PhoneLoginRequest, response: Response):
 @api_router.post("/auth/register")
 async def register_user(data: RegisterRequest, response: Response):
     """Register new user with phone and 4-digit PIN"""
-    # Check if phone already exists
-    existing = await db.users.find_one({"phone": data.phone}, {"_id": 0})
-    if existing:
-        raise HTTPException(status_code=400, detail="Korisnik sa ovim brojem već postoji")
-    
+    phone = normalize_phone(data.phone)
+    email = (data.email or "").strip().lower()
+
+    # Email is required at registration
+    if not email:
+        raise HTTPException(status_code=400, detail="Email adresa je obavezna")
+
+    # Check if phone already exists (normalized comparison)
+    existing_phone = await db.users.find_one({"phone": phone}, {"_id": 0})
+    if existing_phone:
+        raise HTTPException(status_code=400, detail="Nalog sa ovim brojem telefona već postoji")
+
+    # Check if email already exists (case-insensitive)
+    existing_email = await db.users.find_one(
+        {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}, {"_id": 0}
+    )
+    if existing_email:
+        raise HTTPException(status_code=400, detail="Nalog sa ovom email adresom već postoji")
+
     if not data.pin or len(data.pin) != 4 or not data.pin.isdigit():
         raise HTTPException(status_code=400, detail="PIN mora biti 4 cifre")
     
@@ -715,12 +756,12 @@ async def register_user(data: RegisterRequest, response: Response):
     
     # Create user
     user_id = f"user_{uuid.uuid4().hex[:12]}"
-    country_code = detect_phone_country(data.phone)
+    country_code = detect_phone_country(phone)
     new_user = {
         "user_id": user_id,
-        "phone": data.phone,
+        "phone": phone,
         "name": f"{data.ime} {data.prezime}",
-        "email": data.email,
+        "email": email,
         "country_code": country_code,
         "is_admin": False,
         "status": "active",
