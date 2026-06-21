@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 import httpx
 from passlib.hash import bcrypt
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -945,6 +946,30 @@ async def get_training(training_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Trening nije pronađen")
     return training
 
+# ============== BOOKING TIME WINDOW ==============
+
+# Slot datum/vrijeme are stored in the studio's LOCAL time. The server runs in
+# UTC, so we convert to UTC before comparing. ZoneInfo handles CET/CEST (DST)
+# automatically, so no fixed offset is hardcoded.
+STUDIO_TZ = ZoneInfo("Europe/Sarajevo")
+BOOKING_CUTOFF_MINUTES = 120  # 2 sata prije početka
+
+def slot_start_utc(datum: str, vrijeme: str):
+    """'2026-06-21' + '17:00' (lokalno vrijeme studija) -> UTC datetime, ili None."""
+    try:
+        local = datetime.strptime(f"{datum} {vrijeme}", "%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return None
+    return local.replace(tzinfo=STUDIO_TZ).astimezone(timezone.utc)
+
+def is_bookable(datum: str, vrijeme: str, now: datetime = None) -> bool:
+    """True ako je do početka termina ostalo >= 2 sata. Neispravan format ne blokira."""
+    start = slot_start_utc(datum, vrijeme)
+    if start is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    return start - now >= timedelta(minutes=BOOKING_CUTOFF_MINUTES)
+
 # ============== BOOKING ==============
 
 @api_router.post("/bookings")
@@ -969,6 +994,9 @@ async def create_booking(data: BookingRequest, request: Request):
     # Check actual slot availability (capacity)
     slot = await db.schedule_slots.find_one({"id": data.slot_id}, {"_id": 0})
     if slot:
+        # Termin se zatvara 2 sata prije početka (koristi vrijeme iz slota, ne klijenta).
+        if not is_bookable(slot["datum"], slot["vrijeme"]):
+            raise HTTPException(status_code=400, detail="Prekasno za zakazivanje — termin se zatvara 2 sata prije početka.")
         booked_count = await db.trainings.count_documents({
             "slot_id": data.slot_id, "tip": {"$in": ["predstojeći", "završen", "probni"]}
         })
@@ -1076,6 +1104,10 @@ async def create_trial_booking(data: TrialBookingRequest, request: Request):
     if not slot:
         raise HTTPException(status_code=404, detail="Termin nije pronađen")
 
+    # Termin se zatvara 2 sata prije početka.
+    if not is_bookable(slot["datum"], slot["vrijeme"]):
+        raise HTTPException(status_code=400, detail="Prekasno za zakazivanje — termin se zatvara 2 sata prije početka.")
+
     # Check slot availability (capacity)
     booked_count = await db.trainings.count_documents({
         "slot_id": data.slot_id, "tip": {"$in": ["predstojeći", "završen", "probni"]}
@@ -1155,6 +1187,9 @@ async def reschedule_booking(training_id: str, data: RescheduleRequest, request:
     # Check new slot availability
     new_slot = await db.schedule_slots.find_one({"id": data.new_slot_id}, {"_id": 0})
     if new_slot:
+        # Novi termin se zatvara 2 sata prije početka (vrijeme iz slota).
+        if not is_bookable(new_slot["datum"], new_slot["vrijeme"]):
+            raise HTTPException(status_code=400, detail="Prekasno za zakazivanje — termin se zatvara 2 sata prije početka.")
         booked_count = await db.trainings.count_documents({
             "slot_id": data.new_slot_id,
             "tip": {"$in": ["predstojeći", "završen", "probni"]},
@@ -1606,6 +1641,9 @@ async def get_schedule():
     # seat just like regular bookings, so they must be counted here too.
     result = []
     for slot in slots:
+        # Skrij termine koji se zatvaraju (počinju za < 2h) ili su već prošli.
+        if not is_bookable(slot["datum"], slot["vrijeme"], now):
+            continue
         booked = await db.trainings.count_documents({
             "slot_id": slot["id"], "tip": {"$in": ["predstojeći", "završen", "probni"]}
         })
