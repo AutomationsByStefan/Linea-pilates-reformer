@@ -2509,62 +2509,114 @@ async def admin_update_user_status(user_id: str, data: AdminStatusRequest, reque
 
 # ============== ADMIN FINANCIAL OVERVIEW ==============
 
+def _membership_month_key(value):
+    """Normalize a membership datum_pocetka to 'YYYY-MM'.
+
+    Same normalization as the nested helper in admin_financial_by_start_date:
+    handles BSON Date/datetime, ISO strings ("2026-04-01T..." / "2026-04-01"),
+    and the localized "DD.MM.YYYY" form. Returns None when it can't be parsed.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m")
+    if isinstance(value, str):
+        value = value.strip()
+        if "." in value:
+            parts = value.split(".")
+            if len(parts) >= 3 and parts[2].strip()[:4].isdigit():
+                return f"{parts[2].strip()[:4]}-{parts[1].strip().zfill(2)}"
+            return None
+        if len(value) >= 7 and value[:4].isdigit():
+            return value[:7]
+    return None
+
 @api_router.get("/admin/financial")
 @api_router.get("/admin/finance")
 async def admin_financial_overview(request: Request):
-    """Get financial overview including manual income"""
+    """Get financial overview including manual income.
+
+    Package revenue is attributed to the month of each membership's
+    datum_pocetka (when the package became active) — the SAME logic as
+    /admin/financial-by-start-date — instead of package_requests.approved_at,
+    so historical packages no longer land in the current month. The response
+    shape is unchanged so the frontend needs no changes.
+    """
     await get_admin_user(request)
     now = datetime.now(timezone.utc)
     current_month = now.strftime("%Y-%m")
-    # This month's approved packages
-    this_month_requests = await db.package_requests.find(
-        {"status": "approved", "approved_at": {"$regex": f"^{current_month}"}},
-        {"_id": 0}
-    ).to_list(1000)
-    this_month_pkg_revenue = sum(r.get("package_price", 0) for r in this_month_requests)
-    # This month's manual income
-    this_month_manual = await db.manual_income.find(
-        {"datum": {"$regex": f"^{current_month}"}},
-        {"_id": 0}
-    ).to_list(1000)
-    this_month_manual_revenue = sum(m.get("iznos", 0) for m in this_month_manual)
-    this_month_revenue = this_month_pkg_revenue + this_month_manual_revenue
-    # Monthly revenue for past 12 months
-    monthly_revenue = []
-    for i in range(12):
-        month_dt = now - timedelta(days=30 * i)
-        month_str = month_dt.strftime("%Y-%m")
-        # Check archive first
-        archived = await db.revenue_archive.find_one({"month": month_str}, {"_id": 0})
-        if archived and i > 0:
-            monthly_revenue.append(archived)
-        else:
-            month_requests = await db.package_requests.find(
-                {"status": "approved", "approved_at": {"$regex": f"^{month_str}"}},
-                {"_id": 0}
-            ).to_list(1000)
-            pkg_rev = sum(r.get("package_price", 0) for r in month_requests)
-            month_manual = await db.manual_income.find(
-                {"datum": {"$regex": f"^{month_str}"}},
-                {"_id": 0}
-            ).to_list(1000)
-            manual_rev = sum(m.get("iznos", 0) for m in month_manual)
-            monthly_revenue.append({
-                "month": month_str,
-                "revenue": pkg_rev + manual_rev,
-                "pkg_revenue": pkg_rev,
-                "manual_revenue": manual_rev,
-                "count": len(month_requests)
-            })
-    # Revenue by package type
-    all_approved = await db.package_requests.find({"status": "approved"}, {"_id": 0}).to_list(5000)
+
+    # Ordered list of the last 12 months, oldest -> newest.
+    months = []
+    y, mth = now.year, now.month
+    for _ in range(12):
+        months.append(f"{y}-{mth:02d}")
+        mth -= 1
+        if mth == 0:
+            mth, y = 12, y - 1
+    months.reverse()
+
+    # Price lookup maps (explicit membership cijena wins; else package default).
+    packages = await db.packages.find({}, {"_id": 0, "id": 1, "naziv": 1, "cijena": 1}).to_list(200)
+    pkg_price_by_id = {p["id"]: p.get("cijena", 0) for p in packages}
+    pkg_price_by_naziv = {p["naziv"]: p.get("cijena", 0) for p in packages}
+
+    # Fetch ALL memberships and bucket in Python — datum_pocetka may be a BSON Date,
+    # an ISO string, or "DD.MM.YYYY", so a Mongo range query is unreliable (see
+    # admin_financial_by_start_date for the full explanation).
+    all_memberships = await db.memberships.find({}, {"_id": 0}).to_list(20000)
+
+    pkg_rev_by_month = {m: 0 for m in months}
+    pkg_count_by_month = {m: 0 for m in months}
     by_package = {}
-    for r in all_approved:
-        name = r.get("package_name", "Unknown")
+    for mem in all_memberships:
+        month_key = _membership_month_key(mem.get("datum_pocetka"))
+        # Resolve price: explicit cijena, else package default by id, else by naziv.
+        cijena = mem.get("cijena")
+        if cijena is None:
+            cijena = pkg_price_by_id.get(mem.get("package_id"))
+        if cijena is None:
+            cijena = pkg_price_by_naziv.get(mem.get("naziv"), 0)
+        cijena = cijena or 0
+        # Revenue-by-package covers ALL memberships (all-time, like before).
+        name = mem.get("naziv", "Unknown")
         if name not in by_package:
             by_package[name] = {"count": 0, "revenue": 0}
         by_package[name]["count"] += 1
-        by_package[name]["revenue"] += r.get("package_price", 0)
+        by_package[name]["revenue"] += cijena
+        # Monthly buckets only for months inside the 12-month window.
+        if month_key in pkg_rev_by_month:
+            pkg_rev_by_month[month_key] += cijena
+            pkg_count_by_month[month_key] += 1
+
+    # Manual income bucketed by its datum month (unchanged source).
+    all_manual = await db.manual_income.find({}, {"_id": 0}).to_list(5000)
+    manual_rev_by_month = {m: 0 for m in months}
+    this_month_manual_revenue = 0
+    for entry in all_manual:
+        datum = entry.get("datum", "")
+        mkey = datum[:7] if isinstance(datum, str) and len(datum) >= 7 else None
+        iznos = entry.get("iznos", 0) or 0
+        if mkey == current_month:
+            this_month_manual_revenue += iznos
+        if mkey in manual_rev_by_month:
+            manual_rev_by_month[mkey] += iznos
+
+    monthly_revenue = []
+    for m in months:
+        pkg_rev = pkg_rev_by_month[m]
+        manual_rev = manual_rev_by_month[m]
+        monthly_revenue.append({
+            "month": m,
+            "revenue": pkg_rev + manual_rev,
+            "pkg_revenue": pkg_rev,
+            "manual_revenue": manual_rev,
+            "count": pkg_count_by_month[m],
+        })
+
+    this_month_pkg_revenue = pkg_rev_by_month.get(current_month, 0)
+    this_month_revenue = this_month_pkg_revenue + this_month_manual_revenue
+
     # Client stats
     total_users = await db.users.count_documents({"is_admin": {"$ne": True}})
     active_memberships = await db.memberships.count_documents({"tip": "aktivna"})
@@ -2578,7 +2630,7 @@ async def admin_financial_overview(request: Request):
         "ovaj_mjesec_prihod": this_month_revenue,
         "ovaj_mjesec_paketi": this_month_pkg_revenue,
         "ovaj_mjesec_rucni": this_month_manual_revenue,
-        "mjesecni_prihod": list(reversed(monthly_revenue)),
+        "mjesecni_prihod": monthly_revenue,
         "prihod_po_paketu": [{"naziv": k, **v} for k, v in by_package.items()],
         "ukupno_klijenata": total_users,
         "aktivne_clanarine": active_memberships,
