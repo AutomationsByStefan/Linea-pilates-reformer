@@ -4121,9 +4121,25 @@ async def admin_analytics_slots(request: Request):
             time_counts[v] = time_counts.get(v, 0) + 1
     popular_days = sorted(day_counts.items(), key=lambda x: x[1], reverse=True)
     popular_times = sorted(time_counts.items(), key=lambda x: x[1], reverse=True)
-    # Average occupancy
-    total_slots = await db.schedule_slots.count_documents({})
-    avg_occupancy = round((total_bookings / total_slots * 100), 1) if total_slots > 0 else 0
+    # Average occupancy — prosjek popunjenosti PO SLOTU (zauzeto / ukupno_mjesta),
+    # racunato samo nad slotovima koji postoje u bazi pa je rezultat uvijek 0-100%.
+    all_slots = await db.schedule_slots.find(
+        {}, {"_id": 0, "id": 1, "ukupno_mjesta": 1}
+    ).to_list(100000)
+    total_slots = len(all_slots)
+    if total_slots > 0:
+        occupancy_sum = 0.0
+        for slot in all_slots:
+            capacity = slot.get("ukupno_mjesta", 0) or 0
+            if capacity <= 0:
+                continue
+            booked = await db.trainings.count_documents({
+                "slot_id": slot["id"], "tip": {"$in": ["predstojeći", "završen", "probni"]}
+            })
+            occupancy_sum += min(booked, capacity) / capacity
+        avg_occupancy = round(occupancy_sum / total_slots * 100, 1)
+    else:
+        avg_occupancy = 0
     return {
         "total_bookings": total_bookings,
         "total_slots": total_slots,
