@@ -226,6 +226,8 @@ class AdminCustomMembershipRequest(BaseModel):
     termini: Optional[int] = None
     trajanje_dana: int = 35
     start_date: Optional[str] = None
+    # None = naslijedi s paketa; True/False = admin eksplicitno zadaje
+    neograniceni: Optional[bool] = None
 
 class ManualIncomeRequest(BaseModel):
     iznos: float
@@ -245,6 +247,7 @@ class PackageCreateRequest(BaseModel):
     trajanje_dana: int = 35
     popular: bool = False
     active: bool = True
+    neograniceni: bool = False  # neograničen broj termina unutar trajanje_dana
 
 def detect_phone_country(phone: str) -> str:
     """Detect country from phone number prefix"""
@@ -287,6 +290,72 @@ def normalize_phone(phone: str) -> str:
     return cleaned
 
 # ============== HELPER FUNCTIONS ==============
+
+def is_unlimited(doc: Optional[dict]) -> bool:
+    """True ako je paket/članarina neograničena ("Linea Unlimited").
+
+    Neograničen paket se NE vodi kroz `preostali_termini` — balans ostaje 0 i nikad
+    se ne dekrementira. Validnost zavisi isključivo od `datum_isteka` (35 dana), pa
+    zakazivanje prestaje kad paket istekne, a ne kad se potroši broj termina.
+    Zato svako mjesto koje radi $inc na `preostali_termini` ili filtrira po
+    {"preostali_termini": {"$gt": 0}} mora prvo proći kroz ovu provjeru.
+
+    Flag se postavlja na paketu u db.packages i denormalizuje na članarinu pri
+    aktivaciji, jer sve operacije ispod rade nad dokumentom članarine (a custom
+    članarine uopšte nemaju package_id).
+    """
+    return bool(doc and doc.get("neograniceni"))
+
+
+UNLIMITED_OR_HAS_SESSIONS = [
+    {"preostali_termini": {"$gt": 0}},
+    {"neograniceni": True},
+]
+"""$or grana za "članarina može zakazati": ima termina ILI je neograničena."""
+
+
+CONSUMING_TRAINING_TYPES = ["predstojeći", "završen", "iskoristen"]
+
+
+def date_key(value) -> str:
+    """Normalizuje datum na "YYYY-MM-DD" radi poređenja.
+
+    Datumi u bazi nisu jednoobrazni — `datum` u treninzima zna biti "YYYY-MM-DD",
+    puni ISO timestamp ili "DD.MM.YYYY", pa direktno poređenje stringova nije
+    pouzdano. Vraća "" za neprepoznat oblik.
+    """
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    if not value:
+        return ""
+    # "DD.MM.YYYY[ HH:MM]" -> "YYYY-MM-DD"
+    if "." in value and "-" not in value:
+        parts = value.split(" ")[0].split(".")
+        if len(parts) >= 3 and parts[2].strip()[:4].isdigit():
+            return f"{parts[2].strip()[:4]}-{parts[1].strip().zfill(2)}-{parts[0].strip().zfill(2)}"
+        return ""
+    return value[:10]
+
+
+async def count_used_in_window(user_id: str, membership: dict) -> int:
+    """Broj treninga odrađenih unutar prozora članarine.
+
+    Koristi se za neograničen paket, koji nema brojač termina (ukupni = preostali
+    = 0), pa se "iskorišteno" mora izvesti iz stvarnih treninga.
+    """
+    start = date_key(membership.get("datum_pocetka"))
+    end = date_key(membership.get("datum_isteka"))
+    if not start or not end:
+        return 0
+    trainings = await db.trainings.find(
+        {"user_id": user_id, "tip": {"$in": CONSUMING_TRAINING_TYPES}},
+        {"_id": 0, "datum": 1},
+    ).to_list(10000)
+    return sum(1 for t in trainings if start <= date_key(t.get("datum")) <= end)
+
 
 async def expire_overdue_memberships(user_id: str):
     """Mark any active membership past its expiry date as expired.
@@ -844,6 +913,11 @@ async def get_memberships(request: Request):
         {"user_id": user.user_id},
         {"_id": 0}
     ).to_list(100)
+    # Neograničen paket nema brojač termina, pa mu "iskorišteno" računamo iz treninga
+    # — inače bi klijent prikazivao 0.
+    for m in memberships:
+        if is_unlimited(m) and m.get("iskoristeni_termini") is None:
+            m["iskoristeni_termini"] = await count_used_in_window(user.user_id, m)
     return memberships
 
 @api_router.get("/memberships/active")
@@ -866,9 +940,10 @@ async def get_active_memberships(request: Request):
                 exp = isteka
             if exp.tzinfo is None:
                 exp = exp.replace(tzinfo=timezone.utc)
-            is_valid = exp > now and preostali > 0
+            # Neograničen paket ne troši termine — vrijedi dok mu ne istekne rok.
+            is_valid = exp > now if is_unlimited(m) else (exp > now and preostali > 0)
         except Exception:
-            is_valid = preostali > 0
+            is_valid = True if is_unlimited(m) else preostali > 0
         m["status"] = "aktivna" if is_valid else "istekla"
         result.append(m)
     return result
@@ -966,9 +1041,10 @@ async def cancel_training(training_id: str, request: Request):
         {"$set": {"tip": "otkazan"}}
     )
     logger.info(f"Training {training_id} cancelled for user {user.user_id}")
-    # Restore session to active membership
+    # Restore session to active membership. Neograničen paket nikad nije ni oduzeo
+    # termin, pa mu se ne smije vraćati — inače bi balans rastao u lažni plus.
     restore_result = await db.memberships.update_one(
-        {"user_id": user.user_id, "tip": "aktivna"},
+        {"user_id": user.user_id, "tip": "aktivna", "neograniceni": {"$ne": True}},
         {"$inc": {"preostali_termini": 1}}
     )
     logger.info(f"Membership restore for user {user.user_id}: matched={restore_result.matched_count}, modified={restore_result.modified_count}")
@@ -1088,13 +1164,17 @@ async def create_booking(data: BookingRequest, request: Request):
     # u minus). Ako ne, ali članica je ranije imala paket -> najnoviji paket (dug
     # ostaje brojiv i izmiruje se na sljedećoj aktivaciji). Ako paketa nema -> ništa
     # (compute_minus() takve treninge broji kroz Sabirak 2).
-    debt_target = membership
-    if debt_target is None:
-        debt_target = await db.memberships.find_one(
-            {"user_id": user.user_id},
-            {"_id": 0, "id": 1},
-            sort=[("created_at", -1)],
-        )
+    # Neograničen aktivan paket ne troši termine — balans ostaje 0 i ne ide u minus.
+    if is_unlimited(membership):
+        debt_target = None
+    else:
+        debt_target = membership
+        if debt_target is None:
+            debt_target = await db.memberships.find_one(
+                {"user_id": user.user_id},
+                {"_id": 0, "id": 1},
+                sort=[("created_at", -1)],
+            )
     if debt_target:
         await db.memberships.update_one(
             {"id": debt_target["id"]},
@@ -1364,12 +1444,12 @@ async def accept_training_invite(invite_id: str, request: Request):
             "message": "Nažalost, ovaj termin je upravo popunjen 😕\nMolimo te da odabereš drugi dostupni termin."
         }
     
-    # Check if user has membership
+    # Check if user has membership (neograničen paket prolazi bez preostalih termina)
     membership = await db.memberships.find_one(
-        {"user_id": user.user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}},
+        {"user_id": user.user_id, "tip": "aktivna", "$or": UNLIMITED_OR_HAS_SESSIONS},
         {"_id": 0}
     )
-    
+
     if not membership:
         raise HTTPException(status_code=400, detail="Nemate aktivnu članarinu ili preostalih termina")
     
@@ -1388,12 +1468,13 @@ async def accept_training_invite(invite_id: str, request: Request):
     }
     await db.trainings.insert_one(training)
     
-    # Decrement membership slots
-    await db.memberships.update_one(
-        {"id": membership["id"]},
-        {"$inc": {"preostali_termini": -1}}
-    )
-    
+    # Decrement membership slots (neograničen paket ne troši termine)
+    if not is_unlimited(membership):
+        await db.memberships.update_one(
+            {"id": membership["id"]},
+            {"$inc": {"preostali_termini": -1}}
+        )
+
     # Update invite status
     await db.training_invites.update_one(
         {"id": invite_id},
@@ -1780,6 +1861,7 @@ async def get_user_stats(request: Request):
     return {
         "preostali_termini": membership.get("preostali_termini", 0) if membership else 0,
         "ukupni_termini": membership.get("ukupni_termini", 0) if membership else 0,
+        "neograniceni": is_unlimited(membership),
         "naziv_paketa": membership.get("naziv", "") if membership else "",
         "datum_pocetka": membership.get("datum_pocetka") if membership else None,
         "datum_isteka": membership.get("datum_isteka") if membership else None,
@@ -2186,6 +2268,7 @@ async def request_package(data: PackageRequestModel, request: Request):
         "package_name": pkg["naziv"],
         "package_price": pkg["cijena"],
         "package_sessions": pkg["termini"],
+        "neograniceni": is_unlimited(pkg),
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat()
     }
@@ -2241,6 +2324,7 @@ async def admin_approve_package(request_id: str, request: Request):
         "naziv": pkg_req["package_name"],
         "package_id": pkg_req["package_id"],
         "tip": "aktivna",
+        "neograniceni": bool(pkg_req.get("neograniceni")),
         "preostali_termini": pkg_req["package_sessions"],
         "ukupni_termini": pkg_req["package_sessions"],
         "cijena": pkg_req["package_price"],
@@ -2255,14 +2339,18 @@ async def admin_approve_package(request_id: str, request: Request):
     )
     await db.memberships.insert_one(membership)
     # Izmiri eventualni minus (oduzmi minus treninge od novog paketa, clamp na 0,
-    # obriši minus flag da banner nestane).
-    minus_count, preostali = await settle_minus_sessions(
-        pkg_req["user_id"], membership["id"], pkg_req["package_sessions"]
-    )
-    if minus_count > 0:
-        termini_tekst = f"{preostali} termina ({minus_count} oduzeta za minus)"
+    # obriši minus flag da banner nestane). Neograničen paket nema balans iz kojeg
+    # bi se dug naplatio — stari dug ostaje i izmiruje se na sljedećem paketu.
+    if is_unlimited(membership):
+        termini_tekst = "neograničen broj termina"
     else:
-        termini_tekst = f"{pkg_req['package_sessions']} termina"
+        minus_count, preostali = await settle_minus_sessions(
+            pkg_req["user_id"], membership["id"], pkg_req["package_sessions"]
+        )
+        if minus_count > 0:
+            termini_tekst = f"{preostali} termina ({minus_count} oduzeta za minus)"
+        else:
+            termini_tekst = f"{pkg_req['package_sessions']} termina"
     admin_name = admin_user.get("name", admin_user.get("email", "Admin"))
     await db.package_requests.update_one(
         {"id": request_id},
@@ -2316,6 +2404,16 @@ async def admin_reject_package(request_id: str, request: Request):
 async def admin_deduct_session(user_id: str, request: Request):
     """Deduct one session from user's membership"""
     await get_admin_user(request)
+    # Neograničen paket nema brojač termina — oduzimanje nema šta da umanji.
+    unlimited = await db.memberships.find_one(
+        {"user_id": user_id, "tip": "aktivna", "neograniceni": True}, {"_id": 0}
+    )
+    if unlimited:
+        return {
+            "success": False,
+            "message": "Korisnik ima neograničen paket — termini se ne oduzimaju.",
+            "preostali": None,
+        }
     membership = await db.memberships.find_one(
         {"user_id": user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}}, {"_id": 0}
     )
@@ -2378,9 +2476,11 @@ async def admin_book_training(user_id: str, data: AdminBookTrainingRequest, requ
     }
     await db.trainings.insert_one(training)
 
-    # Decrement membership slots only if the user has sessions left (never go negative)
+    # Decrement membership slots only if the user has sessions left (never go negative).
+    # Neograničen paket se ovdje hvata preko $or jer nema preostalih termina, ali mu
+    # 35-dnevni prozor svejedno mora krenuti od prvog treninga.
     membership = await db.memberships.find_one(
-        {"user_id": user_id, "tip": "aktivna", "preostali_termini": {"$gt": 0}}, {"_id": 0}
+        {"user_id": user_id, "tip": "aktivna", "$or": UNLIMITED_OR_HAS_SESSIONS}, {"_id": 0}
     )
     if membership:
         # Start the 35-day period from this date if it's the user's first training
@@ -2397,10 +2497,11 @@ async def admin_book_training(user_id: str, data: AdminBookTrainingRequest, requ
                     "datum_isteka": (booking_date + timedelta(days=35)).isoformat()
                 }}
             )
-        await db.memberships.update_one(
-            {"id": membership["id"]},
-            {"$inc": {"preostali_termini": -1}}
-        )
+        if not is_unlimited(membership):
+            await db.memberships.update_one(
+                {"id": membership["id"]},
+                {"$inc": {"preostali_termini": -1}}
+            )
 
     await db.users.update_one(
         {"user_id": user_id},
@@ -2882,6 +2983,10 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
     termini = data.termini if data.termini is not None else (pkg.get("termini") if pkg else None)
     cijena = data.cijena if data.cijena is not None else (pkg.get("cijena") if pkg else None)
     trajanje_dana = data.trajanje_dana or (pkg.get("trajanje_dana") if pkg else None) or 35
+    # Flag se nasljeđuje s paketa, ili ga admin može zadati eksplicitno.
+    neograniceni = data.neograniceni if data.neograniceni is not None else is_unlimited(pkg)
+    if neograniceni and termini is None:
+        termini = 0
 
     if not naziv:
         raise HTTPException(status_code=400, detail="Naziv paketa je obavezan.")
@@ -2906,6 +3011,7 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
         "naziv": naziv,
         "package_id": data.package_id,
         "tip": "aktivna",
+        "neograniceni": bool(neograniceni),
         "preostali_termini": termini,
         "ukupni_termini": termini,
         "cijena": cijena,
@@ -2916,12 +3022,16 @@ async def admin_create_custom_membership(user_id: str, data: AdminCustomMembersh
     }
     await db.memberships.insert_one(membership)
     # Izmiri eventualni minus (oduzmi minus treninge od novog paketa, clamp na 0,
-    # obriši minus flag da banner nestane).
-    minus_count, preostali = await settle_minus_sessions(user_id, membership["id"], termini)
-    if minus_count > 0:
-        termini_tekst = f"{preostali} termina ({minus_count} oduzeta za minus)"
+    # obriši minus flag da banner nestane). Neograničen paket nema balans iz kojeg
+    # bi se dug naplatio — stari dug ostaje i izmiruje se na sljedećem paketu.
+    if neograniceni:
+        termini_tekst = "neograničen broj termina"
     else:
-        termini_tekst = f"{termini} termina"
+        minus_count, preostali = await settle_minus_sessions(user_id, membership["id"], termini)
+        if minus_count > 0:
+            termini_tekst = f"{preostali} termina ({minus_count} oduzeta za minus)"
+        else:
+            termini_tekst = f"{termini} termina"
     # Conversion tracking: mark recent renewal reminders as converted (within 7 days)
     await mark_renewal_conversions(user_id, "custom_membership")
     # Notify user
@@ -3043,6 +3153,21 @@ async def admin_get_full_history(user_id: str, request: Request):
     def _iso(value):
         return value.isoformat() if isinstance(value, datetime) else value
 
+    # --- Trainings (all statuses) ---
+    raw_trainings = await db.trainings.find({"user_id": user_id}, {"_id": 0}).to_list(10000)
+
+    def _unlimited_used(m: dict) -> int:
+        """Kao count_used_in_window(), ali nad već učitanim treninzima (bez novog upita)."""
+        start = date_key(m.get("datum_pocetka"))
+        end = date_key(m.get("datum_isteka"))
+        if not start or not end:
+            return 0
+        return sum(
+            1 for t in raw_trainings
+            if t.get("tip") in CONSUMING_TRAINING_TYPES
+            and start <= date_key(t.get("datum")) <= end
+        )
+
     # --- Memberships (active and expired) ---
     raw_memberships = await db.memberships.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
     memberships = []
@@ -3054,7 +3179,7 @@ async def admin_get_full_history(user_id: str, request: Request):
         # Prefer an explicit iskoristeni_termini; otherwise derive it.
         iskoristeni = m.get("iskoristeni_termini")
         if iskoristeni is None:
-            iskoristeni = max(0, ukupni - preostali)
+            iskoristeni = _unlimited_used(m) if is_unlimited(m) else max(0, ukupni - preostali)
         memberships.append({
             "id": m.get("id"),
             "package_name": m.get("naziv"),
@@ -3064,14 +3189,13 @@ async def admin_get_full_history(user_id: str, request: Request):
             "ukupni_termini": ukupni,
             "preostali_termini": preostali,
             "iskoristeni_termini": iskoristeni,
+            "neograniceni": is_unlimited(m),
             "tip": m.get("tip"),
             "status": m.get("status", m.get("tip")),
             "historical": bool(m.get("historical", False)),
         })
     memberships.sort(key=lambda x: _sort_key(x["datum_pocetka"]), reverse=True)
 
-    # --- Trainings (all statuses) ---
-    raw_trainings = await db.trainings.find({"user_id": user_id}, {"_id": 0}).to_list(10000)
     trainings = []
     for t in raw_trainings:
         trainings.append({
@@ -3152,15 +3276,24 @@ async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingReques
     deducted = False
     remaining_after = None
     debt_target = None
+    unlimited_cover = False
     if not data.historical:
         debt_target = await db.memberships.find_one(
             {"user_id": user_id, "tip": "aktivna"},
-            {"_id": 0, "id": 1, "preostali_termini": 1, "naziv": 1},
+            {"_id": 0, "id": 1, "preostali_termini": 1, "naziv": 1, "neograniceni": 1},
         ) or await db.memberships.find_one(
             {"user_id": user_id},
-            {"_id": 0, "id": 1, "preostali_termini": 1, "naziv": 1},
+            {"_id": 0, "id": 1, "preostali_termini": 1, "naziv": 1, "neograniceni": 1},
             sort=[("created_at", -1)],
         )
+        # Neograničen paket pokriva trening bez skidanja termina.
+        if is_unlimited(debt_target):
+            await db.trainings.update_one(
+                {"id": training["id"]},
+                {"$set": {"membership_id": debt_target["id"]}},
+            )
+            debt_target = None
+            unlimited_cover = True
     if debt_target:
         await db.memberships.update_one(
             {"id": debt_target["id"]},
@@ -3179,6 +3312,11 @@ async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingReques
         message = (
             f"Historijski trening dodan za {user_name} ({data.datum} u {data.vrijeme}). "
             f"Nije oduzet termin — zabilježen samo u historiji."
+        )
+    elif unlimited_cover:
+        message = (
+            f"Prošli trening dodan za {user_name} ({data.datum} u {data.vrijeme}). "
+            f"Neograničen paket — termin nije oduzet."
         )
     elif deducted:
         message = (
@@ -3200,6 +3338,7 @@ async def admin_add_past_training(user_id: str, data: AdminAddPastTrainingReques
         "success": True,
         "message": message,
         "deducted": deducted,
+        "unlimited": unlimited_cover,
         "remaining_after": remaining_after,
         "training": {k: v for k, v in training.items() if k != "_id"},
     }
@@ -3276,6 +3415,7 @@ async def admin_create_package(data: PackageCreateRequest, request: Request):
         "trajanje_dana": data.trajanje_dana,
         "popular": data.popular,
         "active": data.active,
+        "neograniceni": data.neograniceni,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.packages.insert_one(package)
@@ -3290,7 +3430,8 @@ async def admin_update_package(package_id: str, data: PackageCreateRequest, requ
         {"$set": {
             "naziv": data.naziv, "opis": data.opis, "cijena": data.cijena,
             "termini": data.termini, "trajanje_dana": data.trajanje_dana,
-            "popular": data.popular, "active": data.active
+            "popular": data.popular, "active": data.active,
+            "neograniceni": data.neograniceni
         }}
     )
     if result.matched_count == 0:
@@ -3353,9 +3494,9 @@ async def admin_expiry_alerts(request: Request):
         {"tip": "aktivna", "datum_isteka": {"$lte": seven_days}},
         {"_id": 0}
     ).to_list(500)
-    # 2 or fewer sessions remaining
+    # 2 or fewer sessions remaining (neograničen paket nema brojač — ne javlja se)
     low_sessions = await db.memberships.find(
-        {"tip": "aktivna", "preostali_termini": {"$lte": 2}},
+        {"tip": "aktivna", "preostali_termini": {"$lte": 2}, "neograniceni": {"$ne": True}},
         {"_id": 0}
     ).to_list(500)
     # Enrich with user info
@@ -3528,6 +3669,7 @@ async def admin_get_users(request: Request):
             "naziv_paketa": membership.get("naziv", "-") if membership else (pending_req.get("package_name", "Na čekanju") if pending_req else "-"),
             "preostali_termini": membership.get("preostali_termini", 0) if membership else 0,
             "ukupni_termini": membership.get("ukupni_termini", 0) if membership else 0,
+            "neograniceni": is_unlimited(membership),
             "datum_aktivacije": membership.get("datum_pocetka", "") if membership else "",
             "datum_isteka": membership.get("datum_isteka", "") if membership else "",
             "predstojeći_treninzi": upcoming,
@@ -3655,11 +3797,11 @@ async def admin_cancel_booking(training_id: str, data: AdminCancelRequest, reque
         {"id": training_id},
         {"$set": {"tip": "otkazan", "razlog_otkazivanja": data.razlog or "Otkazano od strane admina"}}
     )
-    # Restore membership slot
+    # Restore membership slot (neograničen paket nije trošio termin — ne vraćaj mu ga)
     membership = await db.memberships.find_one(
         {"user_id": training["user_id"], "tip": "aktivna"}, {"_id": 0}
     )
-    if membership:
+    if membership and not is_unlimited(membership):
         await db.memberships.update_one(
             {"id": membership["id"]},
             {"$inc": {"preostali_termini": 1}}
@@ -3707,11 +3849,12 @@ async def admin_cancel_training(training_id: str, request: Request):
     )
     logger.info(f"Training {training_id} cancelled by admin for user {training.get('user_id')}")
 
-    # Return the session to the user's active membership
+    # Return the session to the user's active membership (osim neograničenog paketa,
+    # koji termin nikad nije ni oduzeo)
     membership = await db.memberships.find_one(
         {"user_id": training["user_id"], "tip": "aktivna"}, {"_id": 0}
     )
-    if membership:
+    if membership and not is_unlimited(membership):
         await db.memberships.update_one(
             {"id": membership["id"]},
             {"$inc": {"preostali_termini": 1}}
@@ -3829,11 +3972,12 @@ async def admin_approve_cancellation_request(request_id: str, request: Request):
             {"id": req["training_id"]},
             {"$set": {"tip": "otkazan", "razlog_otkazivanja": "Odobren zahtjev za otkazivanje"}},
         )
-        # Return the session to the user's active membership.
+        # Return the session to the user's active membership (neograničen paket je
+        # preskočen — njemu se termini niti oduzimaju niti vraćaju).
         membership = await db.memberships.find_one(
             {"user_id": req["user_id"], "tip": "aktivna"}, {"_id": 0}
         )
-        if membership:
+        if membership and not is_unlimited(membership):
             await db.memberships.update_one(
                 {"id": membership["id"]},
                 {"$inc": {"preostali_termini": 1}},
@@ -4051,9 +4195,9 @@ async def admin_get_warnings(request: Request):
     thirty_days_ago = (now - timedelta(days=30)).isoformat()
     today_str = now.strftime("%Y-%m-%d")
 
-    # Users with 0 remaining sessions
+    # Users with 0 remaining sessions (neograničen paket je uvijek na 0 — preskoči)
     zero_sessions = await db.memberships.find(
-        {"tip": "aktivna", "preostali_termini": 0}, {"_id": 0}
+        {"tip": "aktivna", "preostali_termini": 0, "neograniceni": {"$ne": True}}, {"_id": 0}
     ).to_list(1000)
     zero_session_user_ids = list(set(m["user_id"] for m in zero_sessions))
     zero_session_users = []
@@ -4117,6 +4261,7 @@ async def admin_analytics_clients(request: Request):
                 "last_activity": u.get("last_activity", ""),
                 "paket": active_mem.get("naziv", ""),
                 "preostali_termini": active_mem.get("preostali_termini", 0),
+                "neograniceni": is_unlimited(active_mem),
                 "datum_isteka": active_mem.get("datum_isteka", "")
             })
         else:
@@ -4411,12 +4556,12 @@ async def check_5day_inactivity_reminders():
         now_iso = now.isoformat()
         five_days_ago = (now - timedelta(days=5)).isoformat()
 
-        # 1) Find all active memberships (not expired, has remaining sessions)
+        # 1) Find all active memberships (not expired, has remaining sessions or unlimited)
         active_memberships = await db.memberships.find(
             {
                 "tip": "aktivna",
                 "datum_isteka": {"$gt": now_iso},
-                "preostali_termini": {"$gt": 0},
+                "$or": UNLIMITED_OR_HAS_SESSIONS,
             },
             {"_id": 0, "user_id": 1},
         ).to_list(5000)
@@ -4656,6 +4801,37 @@ async def check_renewal_reminders():
 
 # ============== SEED DATA ==============
 
+UNLIMITED_PACKAGE = {
+    "id": "pkg_unlimited",
+    "naziv": "Linea Unlimited",
+    "opis": "Mala grupa do 3 osobe",
+    "cijena": 250,
+    "valuta": "KM",
+    "termini": 0,          # neograničeno se ne vodi kroz broj termina
+    "trajanje_dana": 35,
+    "popular": False,
+    "best_value": False,
+    "neograniceni": True,
+    "active": True,
+}
+
+
+async def seed_unlimited_package():
+    """Ubaci "Linea Unlimited" i u već popunjenu bazu (idempotentno).
+
+    seed_packages() radi samo nad praznom kolekcijom, pa produkcijska baza — koja
+    pakete već ima — inače nikad ne bi dobila novi paket. $setOnInsert znači da
+    naknadne izmjene kroz admin CRUD ostaju sačuvane pri restartu.
+    """
+    result = await db.packages.update_one(
+        {"id": UNLIMITED_PACKAGE["id"]},
+        {"$setOnInsert": {**UNLIMITED_PACKAGE, "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    if result.upserted_id is not None:
+        logger.info("Seeded package 'Linea Unlimited' (250 KM, neograniceni)")
+
+
 async def seed_packages():
     """Seed default packages if empty"""
     count = await db.packages.count_documents({})
@@ -4668,6 +4844,7 @@ async def seed_packages():
         {"id": "pkg_balance", "naziv": "Linea Balance", "opis": "Mala grupa do 3 osobe", "cijena": 145, "valuta": "KM", "termini": 10, "trajanje_dana": 30, "popular": False, "best_value": False, "active": True},
         {"id": "pkg_gold", "naziv": "Linea Gold", "opis": "Mala grupa do 3 osobe", "cijena": 175, "valuta": "KM", "termini": 12, "trajanje_dana": 30, "popular": True, "best_value": False, "active": True},
         {"id": "pkg_premium", "naziv": "Linea Premium", "opis": "Mala grupa do 3 osobe", "cijena": 200, "valuta": "KM", "termini": 16, "trajanje_dana": 30, "popular": False, "best_value": True, "active": True},
+        dict(UNLIMITED_PACKAGE),
     ]
     for pkg in default_packages:
         pkg["created_at"] = datetime.now(timezone.utc).isoformat()
@@ -4837,6 +5014,7 @@ async def startup():
     logger.info(f"MongoDB URL: {masked}")
     logger.info(f"MongoDB DB_NAME: {os.environ['DB_NAME']}")
     await seed_packages()
+    await seed_unlimited_package()
     await seed_admin()
     await seed_schedule()
     await seed_studio_users()
